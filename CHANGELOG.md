@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An optional profile QR code on the DOPE card. Card Settings → Profile QR Code
+  → On Back prints the rifle and load as a QR code on a second page, the back
+  of the card. The code is a mobiledope:// link that a phone's own camera
+  scans, so the app still never asks for camera access. Importing from the
+  link is not built yet. A profile whose names make the link too long for a
+  code that scans reliably gets a note on the back instead of the code. The
+  comparison card has no code, since it holds several loads.
 - Custom calibers. Settings → Manage Calibers adds calibers that are not in the
   built-in list, each with its bullet diameter so spin drift uses the real
   figure rather than a guess from the name. They appear in the rifle and ammo
