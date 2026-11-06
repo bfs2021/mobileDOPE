@@ -18,13 +18,16 @@ most calculators are quiet about — what it does not.
 | Station Pressure | inHg — **not** the altimeter setting, see below                              |
 | Humidity         | %                                                                            |
 | Altitude         | Feet                                                                         |
-| Wind Speed       | mph                                                                          |
+| Wind Speed       | mph. The lull, when a gust is entered                                        |
+| Gust Speed       | Optional, mph. Must be stronger than Wind Speed                              |
 | Wind Direction   | Degrees the wind blows **from**. 0 = headwind, 90 = full value left-to-right |
 
 ## What you get back
 
 - **Elevation** and **windage**, in both MIL and MOA
 - **Drop** and **wind drift** in inches
+- A **windage bracket**, when a gust is entered — the hold for the lull and the
+  hold for the gust, so you can hold inside it as the wind changes
 - **Velocity** and **energy** at the target
 - **Time of flight**
 - **Maximum ordinate** and where it occurs — the highest the bullet rises above line

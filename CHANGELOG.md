@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Gusting wind in the ballistic calculator: an optional Gust Speed beside Wind
+  Speed (which is then the lull). The solution shows a windage bracket, the
+  hold for the lull to the hold for the gust.
 - Custom calibers. Settings → Manage Calibers adds calibers that are not in the
   built-in list, each with its bullet diameter so spin drift uses the real
   figure rather than a guess from the name. They appear in the rifle and ammo

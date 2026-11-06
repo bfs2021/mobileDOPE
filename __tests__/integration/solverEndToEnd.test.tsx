@@ -1,5 +1,6 @@
 import { fireEvent } from '@testing-library/react-native';
 import React from 'react';
+import { Alert } from 'react-native';
 
 import { AmmoProfile } from '../../src/models/AmmoProfile';
 import { RifleProfile } from '../../src/models/RifleProfile';
@@ -95,15 +96,20 @@ const seedProfiles = (): void => {
 interface Entry {
   yards: number;
   windMph?: number;
+  /** The calculator's optional gust (#220); with it, `windMph` is the lull. */
+  gustMph?: number;
   temperature?: number;
   angularUnit?: 'MIL' | 'MOA';
 }
 
-/**
- * Drive the calculator the way a shooter does, and return what it hands the
- * results screen.
- */
-const solveOnScreen = ({ yards, windMph = 10, temperature, angularUnit = 'MIL' }: Entry) => {
+/** Fill the calculator in the way a shooter does and press Calculate. */
+const enterOnScreen = ({
+  yards,
+  windMph = 10,
+  gustMph,
+  temperature,
+  angularUnit = 'MIL',
+}: Entry) => {
   navigate.mockClear();
   const screen = renderWithProviders(
     <BallisticCalculator
@@ -121,12 +127,21 @@ const solveOnScreen = ({ yards, windMph = 10, temperature, angularUnit = 'MIL' }
   fireEvent.press(screen.getByLabelText(`${yards} yards`));
 
   fireEvent.changeText(screen.getByLabelText('Wind Speed'), String(windMph));
+  if (gustMph !== undefined) {
+    fireEvent.changeText(screen.getByLabelText('Gust Speed'), String(gustMph));
+  }
   if (temperature !== undefined) {
     fireEvent.changeText(screen.getByLabelText('Temperature'), String(temperature));
   }
   if (angularUnit === 'MOA') fireEvent.press(screen.getByText('MOA'));
 
   fireEvent.press(screen.getByText('Calculate Solution'));
+  return screen;
+};
+
+/** Drive the calculator, and return what it hands the results screen. */
+const solveOnScreen = (entry: Entry) => {
+  const screen = enterOnScreen(entry);
 
   expect(navigate).toHaveBeenCalledTimes(1);
   const [route, params] = navigate.mock.calls[0] as [
@@ -138,6 +153,8 @@ const solveOnScreen = ({ yards, windMph = 10, temperature, angularUnit = 'MIL' }
       distance: number;
       distanceUnit: 'yards' | 'meters';
       angularUnit: 'MIL' | 'MOA';
+      gustSpeed?: number;
+      gustSolution?: BallisticSolution;
     },
   ];
   expect(route).toBe('BallisticSolutionResults');
@@ -215,5 +232,62 @@ describe('solver end to end: profiles -> calculator -> solver -> results (#68)',
     expect(cold.elevationMIL).toBeGreaterThan(hot.elevationMIL);
     expect(cold.velocity).toBeLessThan(hot.velocity);
     expect(Math.abs(cold.windageMIL)).toBeGreaterThan(Math.abs(hot.windageMIL));
+  });
+});
+
+describe('gusting wind: a windage bracket from lull to gust (#220)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    seedProfiles();
+  });
+
+  it('solves the gust as well as the lull, with the same everything else', () => {
+    const { solution, gustSpeed, gustSolution } = solveOnScreen({
+      yards: 500,
+      windMph: 8,
+      gustMph: 14,
+    });
+
+    expect(solution.shot.windSpeed).toBe(8);
+    expect(gustSpeed).toBe(14);
+    expect(gustSolution?.shot.windSpeed).toBe(14);
+    expect(gustSolution?.shot.windDirection).toBe(solution.shot.windDirection);
+    // Elevation does not move with a crosswind; only the windage does.
+    expect(gustSolution?.elevationMIL).toBe(solution.elevationMIL);
+    expect(Math.abs(gustSolution!.windageMIL)).toBeGreaterThan(Math.abs(solution.windageMIL));
+  });
+
+  it('shows the lull and gust holds as a bracket, with the lull as the headline', () => {
+    const params = solveOnScreen({ yards: 500, windMph: 8, gustMph: 14 });
+    const screen = showResults(params);
+
+    const lull = params.solution.windageMIL.toFixed(2);
+    const gust = params.gustSolution!.windageMIL.toFixed(2);
+    expect(screen.getByTestId('windage-value').props.children).toBe(lull);
+    expect(screen.getByTestId('windage-bracket').props.children).toBe(`${lull} to ${gust} MIL`);
+    expect(screen.getByText('8 mph lull, 14 mph gust')).toBeTruthy();
+  });
+
+  it('without a gust, solves once and shows no bracket (unchanged behaviour)', () => {
+    const params = solveOnScreen({ yards: 500 });
+
+    expect(params.gustSpeed).toBeUndefined();
+    expect(params.gustSolution).toBeUndefined();
+    const screen = showResults(params);
+    expect(screen.queryByTestId('windage-bracket')).toBeNull();
+    expect(screen.getByTestId('windage-value').props.children).toBe(PINNED.mil500.windage);
+  });
+
+  it('refuses a gust that is not stronger than the lull, and says why', () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+
+    enterOnScreen({ yards: 500, windMph: 10, gustMph: 10 }).unmount();
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith(
+      'Check Gust Speed',
+      expect.stringMatching(/greater than the wind speed/i)
+    );
+    alert.mockRestore();
   });
 });
