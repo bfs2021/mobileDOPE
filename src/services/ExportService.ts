@@ -12,6 +12,7 @@ import {
   newestAutomaticBackup,
   selectBackupsToPrune,
 } from '../utils/backupSchedule';
+import { parseDbTimestamp } from '../utils/dbTimestamp';
 
 import type { AmmoProfile } from '../models/AmmoProfile';
 import type { DOPELog } from '../models/DOPELog';
@@ -218,7 +219,7 @@ function dopeLogsToCSV(
   const rows = logs.map((log) => {
     const env = environmentsById.get(log.environmentId);
     return [
-      sanitizeCsvCell(log.timestamp ? new Date(log.timestamp).toISOString() : ''),
+      sanitizeCsvCell(log.timestamp ? parseDbTimestamp(log.timestamp).toISOString() : ''),
       sanitizeCsvCell(getRifleName(log.rifleId)),
       sanitizeCsvCell(getAmmoName(log.ammoId)),
       sanitizeCsvCell(log.distance),

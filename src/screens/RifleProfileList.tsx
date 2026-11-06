@@ -14,6 +14,7 @@ import {
 import { useTheme } from '../contexts/ThemeContext';
 import { RifleProfile } from '../models/RifleProfile';
 import { useRifleStore } from '../store/useRifleStore';
+import { parseDbTimestamp } from '../utils/dbTimestamp';
 
 type RootStackParamList = {
   RifleProfileForm: { rifleId?: number };
@@ -60,8 +61,12 @@ export const RifleProfileList: React.FC = () => {
           return a.caliber.localeCompare(b.caliber);
         case 'recent':
           // Sort by updatedAt or createdAt, most recent first
-          const dateA = new Date(a.updatedAt || a.createdAt || 0).getTime();
-          const dateB = new Date(b.updatedAt || b.createdAt || 0).getTime();
+          const dateA = parseDbTimestamp(
+            a.updatedAt || a.createdAt || '1970-01-01 00:00:00'
+          ).getTime();
+          const dateB = parseDbTimestamp(
+            b.updatedAt || b.createdAt || '1970-01-01 00:00:00'
+          ).getTime();
           return dateB - dateA;
         default:
           return 0;
