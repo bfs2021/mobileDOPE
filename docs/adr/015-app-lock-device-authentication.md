@@ -1,6 +1,6 @@
 # ADR-015: App lock — a device-authentication gate, or a recorded won't-do
 
-**Status:** Proposed
+**Status:** Accepted — Option A (2026-11-06)
 
 **Date:** 2026-10-28
 
@@ -61,7 +61,22 @@ protection — which is exactly the sentence `CLAUDE.md` is carrying.
 
 ## Decision
 
-**This ADR is Proposed and requests a ruling.** Two options.
+**Accepted: Option A**, ruled by the repository owner on 2026-11-06. Option B
+is kept below as the alternative that was considered.
+
+The lock ships in slices under #67. The first adds the dependency, the
+`NSFaceIDUsageDescription` purpose string, a persisted `appLockEnabled`
+setting (default off) and the document changes below. The gate itself — the
+check at launch and on return to the foreground, the grace period, and the
+Settings row that turns it on — is the follow-up. Until the gate lands the
+setting is **not shown** in Settings: a switch that locks nothing would be the
+false control this ADR warns about.
+
+The two non-security preferences were ruled on at the same time: the sound
+effects toggle is a **won't-do** (haptic feedback already covers it), and the
+data storage location preference moved to #215 as an Android-only feature.
+
+Two options were put forward.
 
 ### Option A — build it, scoped to device authentication (recommended)
 
