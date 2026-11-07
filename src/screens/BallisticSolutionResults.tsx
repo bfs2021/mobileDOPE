@@ -40,6 +40,8 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
     angularUnit,
     windSpeed: solvedWindSpeed,
     windDirection: solvedWindDirection,
+    gustSpeed,
+    gustSolution,
   } = route.params;
   const { settings } = useAppStore();
 
@@ -58,6 +60,22 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
   const baseElevation =
     angularUnit === 'MIL' ? adjusted.baseElevationMIL : adjusted.baseElevationMOA;
   const baseWindage = angularUnit === 'MIL' ? adjusted.baseWindageMIL : adjusted.baseWindageMOA;
+
+  /**
+   * The hold in the gust (#220), through the same advanced-corrections setting
+   * as the lull so the two ends of the bracket are like for like. Absent without
+   * a gust, and then nothing on screen changes.
+   */
+  const gustAdjusted =
+    gustSolution === undefined
+      ? undefined
+      : applyAdvancedCorrections(gustSolution, { enabled: settings.advancedBallisticsEnabled });
+  const gustWindage =
+    gustAdjusted === undefined
+      ? undefined
+      : angularUnit === 'MIL'
+        ? gustAdjusted.windageMIL
+        : gustAdjusted.windageMOA;
   const { theme } = useTheme();
   const { colors } = theme;
 
@@ -267,6 +285,33 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
               </Text>
             </View>
           </View>
+          {/* Gusting wind (#220): the hold for the lull and the hold for the
+              gust, not one averaged figure. Both are the solver's; a DOPE
+              windage offset above is not applied to them, so when the headline
+              is adjusted the caption says whose holds these are. */}
+          {gustWindage !== undefined && gustSpeed !== undefined && (
+            <View style={styles.windageBlock}>
+              <View style={styles.infoRow}>
+                <Text style={[styles.infoLabel, { color: colors.text.secondary }]}>
+                  Windage bracket:
+                </Text>
+                <Text
+                  style={[styles.infoValue, { color: colors.text.primary }]}
+                  testID="windage-bracket"
+                >
+                  {`${windage.toFixed(2)} to ${gustWindage.toFixed(2)} ${angularUnit}`}
+                </Text>
+              </View>
+              <Text
+                style={[styles.matchesCaption, { color: colors.text.secondary }]}
+                testID="windage-bracket-caption"
+              >
+                {`${solvedWindSpeed ?? 0} mph lull, ${gustSpeed} mph gust${
+                  windageApplies ? '. Solver holds, without the DOPE offset' : ''
+                }`}
+              </Text>
+            </View>
+          )}
         </Card>
 
         {/* Advanced corrections, shown separately from the base solution (#71).

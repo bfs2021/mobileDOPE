@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Gusting wind in the ballistic calculator: an optional Gust Speed beside Wind
+  Speed (which is then the lull). The solution shows a windage bracket, the
+  hold for the lull to the hold for the gust.
 - An optional profile QR code on the DOPE card. Card Settings → Profile QR Code
   → On Back prints the rifle and load as a QR code on a second page, the back
   of the card. The code is a mobiledope:// link that a phone's own camera

@@ -81,3 +81,17 @@ export type CompleteEnvironmentalInputs = EnvironmentalInputs &
 export const hasRequiredEnvironmentalInputs = (
   values: EnvironmentalInputs
 ): values is CompleteEnvironmentalInputs => missingEnvironmentalInputs(values).length === 0;
+
+/**
+ * Why an optional gust speed cannot be solved, or `undefined` when it can
+ * (#220).
+ *
+ * With a gust entered, Wind Speed is the lull, and the solution shows the
+ * windage for both as a bracket. A gust no stronger than the lull would give a
+ * bracket whose ends are the same hold, or the wrong way round, so it is
+ * refused rather than solved.
+ */
+export const gustSpeedError = (windSpeed: number, gustSpeed?: number): string | undefined =>
+  gustSpeed === undefined || gustSpeed > windSpeed
+    ? undefined
+    : 'Gust speed must be greater than the wind speed, which is the lull when a gust is entered.';

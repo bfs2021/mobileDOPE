@@ -106,6 +106,12 @@ export type CalculatorStackParamList = {
      */
     windSpeed?: number;
     windDirection?: number;
+    /**
+     * An optional gust, mph, and the same shot solved in it (#220). With a
+     * gust, `windSpeed` is the lull and the screen shows the windage bracket.
+     */
+    gustSpeed?: number;
+    gustSolution?: BallisticSolution;
   };
   WindTable: { rifleId: number; ammoId: number; distance: number };
   MovingTargetCalculator: { rifleId?: number; ammoId?: number };
