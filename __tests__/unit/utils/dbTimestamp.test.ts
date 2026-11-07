@@ -16,6 +16,12 @@ describe('parseDbTimestamp (#228)', () => {
     );
   });
 
+  it('reads fractional seconds, as strftime writes them, as UTC too', () => {
+    expect(parseDbTimestamp('2026-11-06 19:43:09.123').getTime()).toBe(
+      Date.parse('2026-11-06T19:43:09.123Z')
+    );
+  });
+
   it('reads a zone-less SQLite timestamp at the epoch boundary', () => {
     expect(parseDbTimestamp('1970-01-01 00:00:00').getTime()).toBe(0);
   });

@@ -1,3 +1,6 @@
+/** The epoch in SQLite's `datetime('now')` format: where a row with no date sorts. */
+export const DB_EPOCH = '1970-01-01 00:00:00';
+
 /**
  * Parse a timestamp as it was stored in the SQLite database (#228).
  *
@@ -13,8 +16,9 @@
  * answer, `Invalid Date` for garbage included.
  */
 export const parseDbTimestamp = (value: string): Date => {
-  // SQLite's `datetime('now')` format: "YYYY-MM-DD HH:MM:SS", always UTC.
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+  // SQLite's `datetime('now')` format: "YYYY-MM-DD HH:MM:SS", always UTC; the
+  // fractional seconds `strftime('%f')` adds are accepted too.
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value)) {
     return new Date(`${value.replace(' ', 'T')}Z`);
   }
 

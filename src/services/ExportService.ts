@@ -343,7 +343,7 @@ function generateDOPELogsPDFHtml(
 
   const formatDate = (timestamp?: string): string => {
     if (!timestamp) return 'N/A';
-    const date = new Date(timestamp);
+    const date = parseDbTimestamp(timestamp);
     return date.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',

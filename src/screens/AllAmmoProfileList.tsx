@@ -16,7 +16,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { AmmoProfile } from '../models/AmmoProfile';
 import { AmmoStackParamList } from '../navigation/types';
 import { useAmmoStore } from '../store/useAmmoStore';
-import { parseDbTimestamp } from '../utils/dbTimestamp';
+import { DB_EPOCH, parseDbTimestamp } from '../utils/dbTimestamp';
 
 type AllAmmoProfileListNavigationProp = NativeStackNavigationProp<
   AmmoStackParamList,
@@ -85,10 +85,10 @@ export const AllAmmoProfileList: React.FC = () => {
           return a.caliber.localeCompare(b.caliber);
         case 'recent':
           const dateA = parseDbTimestamp(
-            a.ammo.updatedAt || a.ammo.createdAt || '1970-01-01 00:00:00'
+            a.ammo.updatedAt || a.ammo.createdAt || DB_EPOCH
           ).getTime();
           const dateB = parseDbTimestamp(
-            b.ammo.updatedAt || b.ammo.createdAt || '1970-01-01 00:00:00'
+            b.ammo.updatedAt || b.ammo.createdAt || DB_EPOCH
           ).getTime();
           return dateB - dateA;
         default:

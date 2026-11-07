@@ -16,7 +16,7 @@ import { AmmoProfile } from '../models/AmmoProfile';
 import { ProfilesStackParamList } from '../navigation/types';
 import { useAmmoStore } from '../store/useAmmoStore';
 import { useRifleStore } from '../store/useRifleStore';
-import { parseDbTimestamp } from '../utils/dbTimestamp';
+import { DB_EPOCH, parseDbTimestamp } from '../utils/dbTimestamp';
 
 type AmmoProfileListNavigationProp = NativeStackNavigationProp<
   ProfilesStackParamList,
@@ -66,12 +66,8 @@ export const AmmoProfileList: React.FC = () => {
         case 'weight':
           return a.bulletWeight - b.bulletWeight;
         case 'recent':
-          const dateA = parseDbTimestamp(
-            a.updatedAt || a.createdAt || '1970-01-01 00:00:00'
-          ).getTime();
-          const dateB = parseDbTimestamp(
-            b.updatedAt || b.createdAt || '1970-01-01 00:00:00'
-          ).getTime();
+          const dateA = parseDbTimestamp(a.updatedAt || a.createdAt || DB_EPOCH).getTime();
+          const dateB = parseDbTimestamp(b.updatedAt || b.createdAt || DB_EPOCH).getTime();
           return dateB - dateA;
         default:
           return 0;
