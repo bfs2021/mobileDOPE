@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An optional profile QR code on the DOPE card. Card Settings → Profile QR Code
+  → On Back prints the rifle and load as a QR code on a second page, the back
+  of the card. The code is a mobiledope:// link that a phone's own camera
+  scans, so the app still never asks for camera access. Importing from the
+  link is not built yet. A profile whose names make the link too long for a
+  code that scans reliably gets a note on the back instead of the code. The
+  comparison card has no code, since it holds several loads.
 - Share Target Image on DOPE Log Details sends a marked target to the share
   sheet as a PNG: the target as shown, with the distance it was shot at and the
   group's measurements under it, and without the zoom buttons. The distance is
