@@ -14,11 +14,17 @@ import { SegmentedControl, Button } from '../components';
 import { NumberPicker } from '../components/NumberPicker';
 import { UnitToggle } from '../components/UnitToggle';
 import { useTheme } from '../contexts/ThemeContext';
+import { useWindageOffsets } from '../hooks/useWindageOffsets';
 import { useAmmoStore } from '../store/useAmmoStore';
+import { useDOPEStore } from '../store/useDOPEStore';
 import { useEnvironmentStore } from '../store/useEnvironmentStore';
 import { useRifleStore } from '../store/useRifleStore';
 import { calculateAtmosphericConditions } from '../utils/atmospheric';
-import { generateComprehensiveWindTable, WindTableEntry } from '../utils/windTable';
+import {
+  calculateCrosswindComponent,
+  generateComprehensiveWindTable,
+  WindTableEntry,
+} from '../utils/windTable';
 
 import type { CalculatorStackScreenProps } from '../navigation/types';
 import type { RifleConfig, AmmoConfig } from '../types/ballistic.types';
@@ -54,6 +60,7 @@ export function WindTable({ route }: Props) {
   const { getRifleById } = useRifleStore();
   const { getAmmoById } = useAmmoStore();
   const { current: currentEnv } = useEnvironmentStore();
+  const { loadDopeLogs } = useDOPEStore();
 
   const rifle = getRifleById(rifleId);
   const ammo = getAmmoById(ammoId);
@@ -61,28 +68,76 @@ export function WindTable({ route }: Props) {
   const [angularUnit, setAngularUnit] = useState<'MIL' | 'MOA'>('MIL');
   const [windDirection, setWindDirection] = useState(90); // Default: full right-to-left
   const [windTable, setWindTable] = useState<WindTableEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  // True from the first render: the table is not there yet, and the screen
+  // should say so rather than show an empty grid (#232).
+  const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<'table' | 'chart'>('table');
   const [isExporting, setIsExporting] = useState(false);
+  /**
+   * Whether the table shows the solver's own figures or ones adjusted by the
+   * shooter's logged windage (#163). Solver-only is the default here, unlike the
+   * calculator: a table is read as reference and printed onto a DOPE card, and a
+   * card whose provenance is not on the page is worse than one that is plainly
+   * the solver's.
+   */
+  const [adjustByDope, setAdjustByDope] = useState(false);
   const chartRef = useRef<View>(null);
 
   const distances = DISTANCES;
   const windSpeeds = WIND_SPEEDS;
 
+  /**
+   * The logs this rifle and load have. `useDOPEStore` is filled by the History
+   * tab, which a shooter who came straight from the calculator may never have
+   * opened -- without this the table would report no logged windage for a rifle
+   * with fifty logs (#163).
+   */
   useEffect(() => {
-    if (rifle && ammo) {
-      generateTable();
-    }
+    loadDopeLogs(rifleId, ammoId).catch((error) => {
+      // The table falls back to the solver's own figures, which is what it
+      // showed before #163, so this is not fatal.
+      console.error('Failed to load DOPE logs for the wind table:', error);
+    });
+  }, [rifleId, ammoId, loadDopeLogs]);
+
+  /** What the shooter's own windage says the solver gets wrong, per row (#163). */
+  const windageOffsets = useWindageOffsets({ rifleId, ammoId, distances, unit: angularUnit });
+
+  /**
+   * One cell's correction, adjusted when the switch is on and this row has an
+   * offset to apply.
+   *
+   * The offset is per mph of crosswind, so it is scaled by the cell's own
+   * crosswind component -- which is zero in the 0 mph column and half value at
+   * 30 degrees, exactly as the solver's own figure is.
+   */
+  const adjustedCorrection = (entry: WindTableEntry, solverCorrection: number): number => {
+    if (!adjustByDope) return solverCorrection;
+    const perMph = windageOffsets.offsetPerMph.get(entry.distance);
+    if (perMph === undefined) return solverCorrection;
+    return (
+      solverCorrection + perMph * calculateCrosswindComponent(entry.windSpeed, entry.windDirection)
+    );
+  };
+
+  useEffect(() => {
+    if (!rifle || !ammo) return undefined;
+    setLoading(true);
+    // The solve is synchronous and blocks the JS thread. Starting it in the
+    // same tick as the render that sets `loading` meant the spinner was never
+    // painted, and on first open the navigation push waited behind it with the
+    // button still dimmed (#232). Yield once so the screen and its spinner are
+    // on the display first.
+    const timer = setTimeout(generateTable, 0);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rifle, ammo, windDirection, currentEnv]);
 
-  const generateTable = async () => {
+  const generateTable = () => {
     if (!rifle || !ammo) {
       Alert.alert('Error', 'Rifle or ammunition profile not found');
       return;
     }
-
-    setLoading(true);
 
     try {
       // Build rifle config
@@ -143,13 +198,9 @@ export function WindTable({ route }: Props) {
   };
 
   const formatCorrection = (entry: WindTableEntry): string => {
-    if (angularUnit === 'MIL') {
-      return entry.windageCorrection.toFixed(2);
-    } else {
-      // Convert MIL to MOA
-      const moa = entry.windageCorrection * 3.43775;
-      return moa.toFixed(2);
-    }
+    const solverCorrection =
+      angularUnit === 'MIL' ? entry.windageCorrection : entry.windageCorrection * 3.43775;
+    return adjustedCorrection(entry, solverCorrection).toFixed(2);
   };
 
   const formatDrift = (drift: number): string => {
@@ -247,7 +298,7 @@ export function WindTable({ route }: Props) {
         </View>
 
         <View style={styles.controlRow}>
-          <Text style={[styles.label, { color: colors.text.secondary }]}>Wind Direction</Text>
+          {/* NumberPicker draws its own label; a second one here repeated it (#232). */}
           <NumberPicker
             label="Wind Direction"
             value={windDirection}
@@ -270,6 +321,30 @@ export function WindTable({ route }: Props) {
             onValueChange={(value) => setViewMode(value as 'table' | 'chart')}
           />
         </View>
+
+        {/* Solver-only or adjusted by the shooter's logged windage (#163).
+            Offered only when there is an offset to apply: a switch that cannot
+            change the numbers invites the shooter to believe it did. */}
+        {windageOffsets.anyOffset && (
+          <View style={styles.controlRow}>
+            <SegmentedControl
+              options={[
+                { label: 'Solver', value: 'solver' },
+                { label: 'My DOPE', value: 'dope' },
+              ]}
+              selectedValue={adjustByDope ? 'dope' : 'solver'}
+              onValueChange={(value) => setAdjustByDope(value === 'dope')}
+            />
+            <Text
+              style={[styles.envText, { color: colors.text.secondary }]}
+              testID="windage-source-note"
+            >
+              {adjustByDope
+                ? `Adjusted by your logged windage at ${windageOffsets.offsetPerMph.size} of ${distances.length} distances. Rows with no nearby logs show the solver's own figure, and drift and the chart are always the solver's.`
+                : "The solver's own figures, with no correction from your logs."}
+            </Text>
+          </View>
+        )}
 
         {currentEnv && (
           <View style={[styles.envCard, { backgroundColor: colors.surface }]}>
@@ -475,7 +550,12 @@ export function WindTable({ route }: Props) {
       <View style={[styles.footer, { backgroundColor: colors.surface }]}>
         <Text style={[styles.legendText, { color: colors.text.secondary }]}>
           Wind: {getWindDirectionLabel(windDirection)} • Correction shows {angularUnit} adjustment •
-          Drift shows inches of movement
+          Drift shows inches of movement •{' '}
+          {/* Only the correction column is adjusted: drift (and the chart, which
+              plots it) is the solver's either way, so the footer says which. */}
+          {adjustByDope
+            ? "corrections adjusted by your logged DOPE, drift is the solver's"
+            : 'solver only'}
         </Text>
       </View>
     </View>
@@ -501,10 +581,6 @@ const styles = StyleSheet.create({
   },
   controlRow: {
     gap: 8,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '500',
   },
   envCard: {
     padding: 12,

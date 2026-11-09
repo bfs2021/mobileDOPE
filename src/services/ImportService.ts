@@ -179,6 +179,7 @@ const ENVIRONMENT_ALLOWED_FIELDS = [
   'windSpeed',
   'windDirection',
   'latitude',
+  'lightCondition',
   'timestamp',
 ];
 
@@ -197,6 +198,8 @@ const DOPE_LOG_ALLOWED_FIELDS = [
   'hitCount',
   'shotCount',
   'hitPercentage',
+  'coldBoreShot',
+  'shotNumberInSession',
   'notes',
   'timestamp',
 ];

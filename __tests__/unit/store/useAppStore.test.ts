@@ -1,6 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { DEFAULT_DISTANCE_PRESETS, useAppStore } from '../../../src/store/useAppStore';
+import { caliberDiameter, setCustomCalibers } from '../../../src/constants/calibers';
+import {
+  DEFAULT_DISTANCE_PRESETS,
+  DEFAULT_SETTINGS,
+  useAppStore,
+} from '../../../src/store/useAppStore';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
@@ -55,8 +60,35 @@ describe('useAppStore', () => {
       expect(store().settings).toMatchObject(defaults);
     });
 
-    it('exposes ten distance presets from 100 to 1000', () => {
-      expect(DEFAULT_DISTANCE_PRESETS).toEqual([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);
+    it('backs up only on request until the shooter picks a schedule (#66)', async () => {
+      // Settings saved by a release before scheduling existed have neither field;
+      // they must load as today's behaviour, not start writing files unasked.
+      mockStorage.getItem.mockResolvedValue(JSON.stringify({ themeMode: 'light' }));
+      await store().loadSettings();
+      expect(store().settings.backupSchedule).toBe('manual');
+      expect(store().settings.lastAutomaticBackupAt).toBeUndefined();
+    });
+
+    it('exposes distance presets from 100 to 1000 in 25-yard steps (#227)', () => {
+      expect(DEFAULT_DISTANCE_PRESETS).toHaveLength(37);
+      expect(DEFAULT_DISTANCE_PRESETS.slice(0, 4)).toEqual([100, 125, 150, 175]);
+      expect(DEFAULT_DISTANCE_PRESETS[DEFAULT_DISTANCE_PRESETS.length - 1]).toBe(1000);
+    });
+
+    it('moves an untouched old 100-yard preset list to the 25-yard default (#227)', async () => {
+      // updateSettings writes the whole object, so the old default is stored by
+      // anyone who changed any setting, without ever choosing it.
+      mockStorage.getItem.mockResolvedValue(
+        JSON.stringify({ distancePresets: [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000] })
+      );
+      await store().loadSettings();
+      expect(store().settings.distancePresets).toEqual(DEFAULT_DISTANCE_PRESETS);
+    });
+
+    it('keeps a preset list the shooter customised (#227)', async () => {
+      mockStorage.getItem.mockResolvedValue(JSON.stringify({ distancePresets: [100, 300, 650] }));
+      await store().loadSettings();
+      expect(store().settings.distancePresets).toEqual([100, 300, 650]);
     });
   });
 
@@ -120,6 +152,118 @@ describe('useAppStore', () => {
     });
   });
 
+  describe('barometer calibration (#62)', () => {
+    it('starts uncalibrated', async () => {
+      await store().loadSettings();
+
+      expect(store().settings.barometerOffsetInHg).toBe(0);
+    });
+
+    it('persists an offset with the other settings', async () => {
+      await store().updateSettings({ barometerOffsetInHg: 0.04 });
+
+      const [, payload] = mockStorage.setItem.mock.calls[0] as [string, string];
+      expect(JSON.parse(payload)).toMatchObject({ barometerOffsetInHg: 0.04 });
+    });
+
+    it('restores a stored offset', async () => {
+      mockStorage.getItem.mockResolvedValueOnce(JSON.stringify({ barometerOffsetInHg: -0.03 }));
+
+      await store().loadSettings();
+
+      expect(store().settings.barometerOffsetInHg).toBe(-0.03);
+    });
+
+    it.each([['"0.5"'], ['null'], ['5'], ['-2']])(
+      'drops a stored offset of %s rather than skewing every reading with it',
+      async (stored) => {
+        // The offset is added to every barometer reading without the user seeing
+        // it again, so a corrupted or out-of-range value must not survive a load.
+        mockStorage.getItem.mockResolvedValueOnce(`{"barometerOffsetInHg": ${stored}}`);
+
+        await store().loadSettings();
+
+        expect(store().settings.barometerOffsetInHg).toBe(0);
+      }
+    );
+  });
+
+  describe('DOPE-assisted aiming settings on load (#167)', () => {
+    it('restores stored values inside their ranges', async () => {
+      mockStorage.getItem.mockResolvedValueOnce(
+        JSON.stringify({
+          dopeAdjustmentEnabled: false,
+          dopeDistanceDeltaYards: 75,
+          dopeConfidenceThreshold: 0.6,
+          coldBoreModellingEnabled: false,
+          heatShiftModellingEnabled: false,
+        })
+      );
+
+      await store().loadSettings();
+
+      expect(store().settings).toMatchObject({
+        dopeAdjustmentEnabled: false,
+        dopeDistanceDeltaYards: 75,
+        dopeConfidenceThreshold: 0.6,
+        coldBoreModellingEnabled: false,
+        heatShiftModellingEnabled: false,
+      });
+    });
+
+    it('drops values that would silently switch the feature off', async () => {
+      // A window of 0 matches no log and a threshold above 1 can never be
+      // cleared; neither reports anything, so neither may survive a load.
+      mockStorage.getItem.mockResolvedValueOnce(
+        JSON.stringify({
+          dopeAdjustmentEnabled: 'yes',
+          dopeDistanceDeltaYards: 0,
+          dopeConfidenceThreshold: 1.5,
+          coldBoreModellingEnabled: null,
+          heatShiftModellingEnabled: 1,
+        })
+      );
+
+      await store().loadSettings();
+
+      expect(store().settings).toMatchObject({
+        dopeAdjustmentEnabled: DEFAULT_SETTINGS.dopeAdjustmentEnabled,
+        dopeDistanceDeltaYards: DEFAULT_SETTINGS.dopeDistanceDeltaYards,
+        dopeConfidenceThreshold: DEFAULT_SETTINGS.dopeConfidenceThreshold,
+        coldBoreModellingEnabled: DEFAULT_SETTINGS.coldBoreModellingEnabled,
+        heatShiftModellingEnabled: DEFAULT_SETTINGS.heatShiftModellingEnabled,
+      });
+    });
+  });
+
+  describe('app lock (#67, ADR-015)', () => {
+    it('is off by default, including for settings saved before it existed', async () => {
+      expect(DEFAULT_SETTINGS.appLockEnabled).toBe(false);
+      mockStorage.getItem.mockResolvedValueOnce(JSON.stringify({ themeMode: 'light' }));
+      await store().loadSettings();
+      expect(store().settings.appLockEnabled).toBe(false);
+    });
+
+    it('persists and restores the opt-in', async () => {
+      await store().updateSettings({ appLockEnabled: true });
+      const [, payload] = mockStorage.setItem.mock.calls[0] as [string, string];
+      expect(JSON.parse(payload)).toMatchObject({ appLockEnabled: true });
+
+      mockStorage.getItem.mockResolvedValueOnce(payload);
+      await store().loadSettings();
+      expect(store().settings.appLockEnabled).toBe(true);
+    });
+
+    it.each([['yes'], [1], [null]])(
+      'drops a stored value of %p rather than guessing',
+      async (v) => {
+        mockStorage.getItem.mockResolvedValueOnce(JSON.stringify({ appLockEnabled: v }));
+        await store().loadSettings();
+        expect(store().settings.appLockEnabled).toBe(false);
+      }
+    );
+  });
+
   describe('resetSettings', () => {
     it('restores defaults and clears storage', async () => {
       await store().updateSettings({ themeMode: 'light' });
@@ -134,6 +278,34 @@ describe('useAppStore', () => {
       mockStorage.removeItem.mockRejectedValueOnce(new Error('locked'));
 
       await expect(store().resetSettings()).rejects.toThrow('locked');
+    });
+  });
+
+  describe('custom calibers (#67)', () => {
+    const wildcat = { name: '6.5 Wildcat', diameter: 0.264 };
+    afterEach(() => setCustomCalibers([]));
+
+    it('start empty, including for settings saved before they existed', async () => {
+      mockStorage.getItem.mockResolvedValueOnce(JSON.stringify({ themeMode: 'light' }));
+      await store().loadSettings();
+      expect(store().settings.customCalibers).toEqual([]);
+    });
+
+    it('are known to the solver as soon as they are loaded', async () => {
+      // The solver looks diameters up without the store, so loading has to
+      // tell the caliber database; otherwise a custom caliber would fall
+      // through to a guess from its name until something else saved settings.
+      mockStorage.getItem.mockResolvedValueOnce(JSON.stringify({ customCalibers: [wildcat] }));
+      await store().loadSettings();
+      expect(caliberDiameter('6.5 Wildcat')).toBe(0.264);
+    });
+
+    it('are known to the solver as soon as they are saved, and forgotten on reset', async () => {
+      await store().updateSettings({ customCalibers: [wildcat] });
+      expect(caliberDiameter('6.5 Wildcat')).toBe(0.264);
+
+      await store().resetSettings();
+      expect(caliberDiameter('6.5 Wildcat')).toBeUndefined();
     });
   });
 

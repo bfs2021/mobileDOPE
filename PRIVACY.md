@@ -1,6 +1,6 @@
 # Privacy Policy — Mobile DOPE
 
-**Last updated:** 2026-09-30
+**Last updated:** 2026-11-07
 **Applies to:** Mobile DOPE for iOS and Android, current release.
 
 ## The short version
@@ -27,7 +27,29 @@ storage area, readable only by the app:
 - **DOPE logs** — distance, elevation and windage corrections, hit/miss results,
   notes, and the time of the engagement.
 - **Range sessions and shot strings** — including chronograph readings.
-- **App settings** — units, distance presets, and display preferences.
+- **App settings** — units, distance presets, display preferences, and any custom
+  calibers you add.
+- **Marked targets** — where each shot of a group landed, the target's width, and,
+  if you chose one, a photo of the target (see below).
+
+## Target photos
+
+When you mark a group on a DOPE log you can mark it on a photo of your own target
+instead of the plain target the app draws.
+
+**No permission is asked for.** The photo is chosen in the system photo picker,
+which runs outside the app and hands it only the one photo you pick. The app never
+sees the rest of your library and never opens the camera.
+
+**Location is removed before the photo is kept.** Phone photos usually record the
+GPS position they were taken at. The app copies the photo you pick into its own
+private storage with that metadata — EXIF, XMP and IPTC, including any location —
+removed; only the image itself, its colour profile and its orientation are kept. A
+photo the app cannot clean this way (anything but JPEG or PNG) is refused rather
+than stored as it is.
+
+**Deleting it.** Removing the target, choosing a different photo, or deleting the
+DOPE log deletes the stored photo. Target photos are not included in exports.
 
 ## Location
 
@@ -62,10 +84,39 @@ withheld from you for saying no.
 latitude from every stored environmental reading while leaving the temperature,
 pressure and wind readings intact.
 
+## Barometer
+
+On a phone or tablet that has a barometer, the Environment screen offers **Read
+Barometer**. Tapping it takes a few pressure readings over a second or two, fills in
+station pressure, and stops reading. Nothing reads the barometer in the background
+or at any other time.
+
+**What is stored.** Only the station pressure that ends up in the pressure field,
+exactly as if you had typed it. The raw readings are not kept. An optional
+calibration offset you set in Settings is stored with your other settings.
+
+**The iOS permission.** iOS treats the barometer as part of _Motion & Fitness_, so
+the first reading on an iPhone shows a permission prompt under that name. Mobile
+DOPE reads only air pressure through it; it does not read steps, movement or
+activity. On iOS 17.4 and later the sensor library asks iOS to record a tenth of a
+second of accelerometer data to make that prompt appear, working around an iOS
+bug; the app never reads that data. Android needs no permission for the barometer.
+
+**You can decline.** Station pressure can always be entered by hand.
+
 ## Exports and sharing
 
 You can export your data as JSON, CSV, Markdown or PDF, and share it through the
 system share sheet.
+
+On Android you can also choose a folder (Settings → Data Management → Choose
+Export Folder) where each data export you make (profiles, DOPE logs, session
+reports, ballistic solutions and full backups) saves a copy before the share sheet
+opens. Chart images, the DOPE card and target images are not copied there. The
+folder is picked in the system's own folder picker, which grants the app access to
+that one folder and needs no storage permission. A file saved there is outside the
+app's private storage, where other apps with access to that folder can read it.
+Automatic backups are never saved there.
 
 **Exported files are outside the app's control.** Once you send a backup to another
 app, a cloud drive, or a person, this policy no longer governs what happens to it.
@@ -75,6 +126,29 @@ reading. Before a full backup is created, the app tells you this and offers to l
 the coordinates out. A backup exported without coordinates still restores completely —
 only the latitude is missing.
 
+## Automatic backups
+
+Settings → Automatic Backup can save a full backup on a daily or weekly schedule.
+It is off (_Manual_) unless you turn it on.
+
+**When.** There is no background task. A backup is written when you open the app,
+or bring it back to the foreground, and the chosen interval has passed since the
+last one. Choosing _Daily_ or _Weekly_ writes the first one straight away.
+
+**What it contains.** The same JSON as a manual full backup — rifle and ammunition
+profiles, environmental readings and DOPE logs — **with the latitude always left
+out**. It never contains a location, so _Delete Stored Location Data_ leaves no copy
+of your coordinates behind in old backups. App settings are not included.
+
+**Where it lives.** In a `backups` folder inside the app's private documents
+storage — the same private area as the database, readable only by the app. The
+newest seven are kept; older ones are deleted as new ones are written. Nothing is
+sent anywhere. Like the database, the folder is covered by your phone's own device
+backup (iCloud or Google) if you have that turned on.
+
+**Leaving the device.** Only when you tap _Share Latest Backup_, which hands the
+newest file to the system share sheet, exactly as a manual export does.
+
 ## What the app does not do
 
 - No accounts, sign-in, or user identifiers.
@@ -83,8 +157,10 @@ only the latitude is missing.
 - No cloud sync or remote backup.
 - No sale or sharing of data with third parties — there is no mechanism by which
   data could reach a third party.
-- No collection of contacts, photos, microphone, camera, motion, or health data.
-  The app declares no permission for any of these.
+- No collection of contacts, microphone, camera, movement, activity, or health
+  data, and no access to your photo library. The app declares no permission for any
+  of these; the only photo it holds is a target photo you choose yourself, as above.
+  (The Motion & Fitness permission on iOS is for the barometer only — see above.)
 
 ## Retention and deletion
 
@@ -92,6 +168,10 @@ Data is kept until you delete it. There is no automatic expiry.
 
 - **Location only** — Settings → Privacy → _Delete Stored Location Data_.
 - **Everything** — Settings → Data Management → _Clear All Data_.
+- **Automatic backups** — Settings → Automatic Backup → _Delete Automatic
+  Backups_. Choosing _Manual_ stops new ones but keeps the ones already saved.
+  Uninstalling the app also deletes them. Backups you exported yourself are not
+  touched.
 - **Everything, including settings** — uninstall the app. iOS and Android delete the
   app's private storage on uninstall.
 
@@ -105,12 +185,26 @@ anyone, of any age.
 | Permission             | Platform     | Why                                                   |
 | ---------------------- | ------------ | ----------------------------------------------------- |
 | Location, while in use | iOS, Android | Altitude and approximate latitude, as described above |
+| Motion & Fitness       | iOS only     | Reading the barometer, as described above             |
+| Face ID                | iOS only     | The optional app lock, as described below             |
+
+The app lock is not finished (#67). The app declares its Face ID purpose string
+so the lock can ask for Face ID once it ships, but in this version the lock
+cannot be turned on and Face ID is never invoked. On Android the lock will use
+the system biometric prompt, which needs no runtime permission. When it ships
+it will be off until you turn it on, will use your device's own Face ID, Touch
+ID or fingerprint with your device passcode as the fallback, and will store no
+passcode or biometric data of its own. It will hide the app's screens from
+someone holding your unlocked phone. It is not encryption: the database on the
+device and the files you export stay unencrypted.
 
 No other runtime permission is requested. Camera, photo library and shared
-storage, microphone, and physical activity (motion) permissions are explicitly
+storage, microphone, and Android's physical activity permissions are explicitly
 blocked in the app's build configuration so that autolinked libraries cannot
-introduce them. Files you export are written to the app's own storage and handed
-to the system share sheet, which needs no storage permission.
+introduce them. Choosing a target photo uses the system photo picker, which needs
+none of them. Files you export are written to the app's own storage and handed
+to the system share sheet, which needs no storage permission. An Android export
+folder is granted through the system folder picker, which needs none either.
 
 ## Changes to this policy
 

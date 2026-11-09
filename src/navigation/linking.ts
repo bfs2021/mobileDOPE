@@ -118,6 +118,7 @@ export const linking: LinkingOptions<ReactNavigation.RootParamList> = {
             screens: {
               RangeSessionStart: 'session',
               EnvironmentInput: 'session/environment',
+              EnvironmentHistory: 'session/environment/saved',
             },
           },
           Calculator: {
@@ -151,6 +152,7 @@ export const linking: LinkingOptions<ReactNavigation.RootParamList> = {
               DOPELogList: 'logs',
               DOPELogDetail: withIds('logs/:logId'),
               DOPELogEdit: withIds('logs/:logId/edit'),
+              TargetMarking: withIds('logs/:logId/target'),
               DOPECurve: withIds('curve/:rifleId/:ammoId'),
             },
           },
@@ -158,6 +160,7 @@ export const linking: LinkingOptions<ReactNavigation.RootParamList> = {
       },
       Settings: 'settings',
       PrivacyPolicy: 'privacy',
+      Calibers: 'calibers',
     },
   },
 };

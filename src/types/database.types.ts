@@ -38,6 +38,9 @@ export interface AmmoProfileRow {
   updated_at: string;
 }
 
+/** The light a reading was taken in, as the shooter described it (#62). */
+export type LightCondition = 'day' | 'low_light' | 'night';
+
 export interface EnvironmentSnapshotRow {
   id: number;
   temperature: number; // Fahrenheit
@@ -48,6 +51,7 @@ export interface EnvironmentSnapshotRow {
   wind_speed: number; // mph
   wind_direction: number; // degrees (0-360)
   latitude?: number; // degrees, one decimal place -- see src/utils/geoPrecision.ts
+  light_condition?: LightCondition | null; // NULL when the shooter did not record it
   timestamp: string; // ISO date string
 }
 
@@ -69,6 +73,11 @@ export interface DOPELogRow {
   group_size?: number; // inches
   hit_count?: number;
   shot_count?: number;
+  // Barrel state (#164). Both are nullable and NULL means "not recorded" --
+  // every log written before migration 007, and any the user left unanswered.
+  // 0 is a recorded warm bore, which is not the same thing.
+  cold_bore_shot?: number; // 0 or 1
+  shot_number_in_session?: number; // 1-based position in the day's string
   notes?: string;
   timestamp: string;
 }
@@ -107,6 +116,8 @@ export interface TargetImageRow {
   target_type: string;
   poi_markers: string; // JSON string of POI coordinates
   group_size?: number; // inches
+  target_width_inches?: number; // the target's real width; marks are fractions of it (#63)
+  aspect_ratio?: number; // image height / width
   created_at: string;
 }
 
@@ -169,6 +180,8 @@ export const DB_SCHEMA = {
       wind_direction REAL NOT NULL,
       -- Coarsened to one decimal place at capture; longitude is not collected. See #44.
       latitude REAL,
+      -- 'day', 'low_light' or 'night'; NULL when not recorded. See migration 009.
+      light_condition TEXT,
       timestamp TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `,
@@ -187,6 +200,8 @@ export const DB_SCHEMA = {
       group_size REAL,
       hit_count INTEGER,
       shot_count INTEGER,
+      cold_bore_shot INTEGER,
+      shot_number_in_session INTEGER,
       notes TEXT,
       timestamp TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (rifle_id) REFERENCES rifle_profiles(id) ON DELETE CASCADE,
@@ -235,6 +250,8 @@ export const DB_SCHEMA = {
       target_type TEXT NOT NULL,
       poi_markers TEXT NOT NULL,
       group_size REAL,
+      target_width_inches REAL,
+      aspect_ratio REAL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (dope_log_id) REFERENCES dope_logs(id) ON DELETE CASCADE,
       FOREIGN KEY (range_session_id) REFERENCES range_sessions(id) ON DELETE CASCADE

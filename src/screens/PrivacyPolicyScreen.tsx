@@ -40,6 +40,18 @@ const SECTIONS: Section[] = [
       'Rifle and ammunition profiles, environmental readings, DOPE logs, range ' +
         'sessions, shot strings and your app settings. All of it is written to a ' +
         "private database inside the app's own storage, readable only by this app.",
+      'Marked targets: where each shot landed, the width of the target, and a photo ' +
+        'of it if you chose one.',
+    ],
+  },
+  {
+    heading: 'Target photos',
+    paragraphs: [
+      'A target photo is chosen in the system photo picker, which needs no permission ' +
+        'and gives the app only the photo you pick. The camera is never opened.',
+      'Before the photo is kept, its location and other metadata are removed. Only the ' +
+        'image, its colour profile and its orientation are stored. Removing the target ' +
+        'or deleting its DOPE log deletes the photo, and photos are not exported.',
     ],
   },
   {
@@ -58,6 +70,18 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    heading: 'Barometer',
+    paragraphs: [
+      'On a device with a barometer, Read Barometer on the Environment screen takes a ' +
+        'few pressure readings, fills in station pressure and stops. Nothing reads it ' +
+        'in the background.',
+      'Only the station pressure in the field is stored, as if you had typed it. A ' +
+        'calibration offset you set in Settings is kept with your other settings.',
+      'On iPhone the first reading asks for Motion & Fitness access, because iOS files ' +
+        'the barometer there. You can decline and enter station pressure by hand.',
+    ],
+  },
+  {
     heading: 'Exports include your approximate latitude',
     paragraphs: [
       'A full JSON backup carries the rounded latitude stored with each environmental ' +
@@ -65,6 +89,23 @@ const SECTIONS: Section[] = [
         'coordinates out. A backup without coordinates still restores completely.',
       'Once you send a file to another app, a cloud drive or a person, this policy no ' +
         'longer governs what happens to it.',
+      'On Android you can choose an export folder in Settings › Data Management. Each ' +
+        'data export you make (profiles, DOPE logs, session reports, ballistic solutions ' +
+        "and full backups) then also saves a copy there, outside the app's private " +
+        'storage, where other apps with access to that folder can read it. The folder ' +
+        'is picked in the system folder picker, which needs no storage permission. ' +
+        'Automatic backups are never saved there.',
+    ],
+  },
+  {
+    heading: 'Automatic backups stay on this device',
+    paragraphs: [
+      'If you turn on a daily or weekly schedule in Settings › Automatic Backup, a full ' +
+        'backup is saved when you open the app and one is due. It is off unless you turn ' +
+        'it on.',
+      'It holds your profiles, readings and DOPE logs but never a latitude, and it is ' +
+        "kept in the app's private storage beside the database. The newest seven are " +
+        'kept. It leaves the device only if you tap Share Latest Backup.',
     ],
   },
   {
@@ -73,15 +114,24 @@ const SECTIONS: Section[] = [
       'Settings › Privacy › Delete Stored Location Data removes the latitude from every ' +
         'stored reading and keeps the temperature, pressure and wind values.',
       'Settings › Data Management › Clear All Data removes everything.',
-      'Uninstalling the app deletes its private storage, settings included.',
+      'Choosing Manual stops new automatic backups but keeps those already saved; ' +
+        'Settings › Automatic Backup › Delete Automatic Backups removes them.',
+      'Uninstalling the app deletes its private storage, settings and automatic backups ' +
+        'included.',
     ],
   },
   {
     heading: 'Permissions',
     paragraphs: [
-      'Location while in use is the only runtime permission this app requests. Camera, ' +
-        'photo library, microphone and motion permissions are explicitly blocked in the ' +
-        'build configuration so that bundled libraries cannot introduce them.',
+      'Location while in use is one of two runtime permissions this app requests. The ' +
+        'other, on iPhone only, is Motion & Fitness: iOS files the barometer under it, ' +
+        'and Mobile DOPE reads only air pressure through it, when you tap Read ' +
+        'Barometer. Steps, movement and activity are never read. Android needs no ' +
+        'permission for the barometer.',
+      'Camera, photo library, microphone and Android physical-activity permissions are ' +
+        'explicitly blocked in the build configuration so that bundled libraries cannot ' +
+        'introduce them. Choosing a target photo uses the system picker, which needs ' +
+        'none of them.',
     ],
   },
 ];
@@ -99,7 +149,7 @@ export const PrivacyPolicyScreen: React.FC<RootStackScreenProps<'PrivacyPolicy'>
         accessibilityHint="Scroll to read how Mobile DOPE handles your data"
       >
         <Text style={[styles.updated, { color: colors.text.secondary }]}>
-          Last updated 26 August 2026 · applies to this release
+          Last updated 7 November 2026 · applies to this release
         </Text>
 
         {SECTIONS.map((section) => (

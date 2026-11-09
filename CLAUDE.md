@@ -230,8 +230,31 @@ because this section said the app collected nothing while it was storing precise
   for altitude (density-altitude term) and latitude (Coriolis term). Latitude is
   coarsened to one decimal place -- ~11 km -- by `src/utils/geoPrecision.ts` before it
   is persisted. **Longitude is never recorded**; nothing calculates with it.
+- **A target photo the shooter picks is stored, stripped of metadata.** Mark Target
+  (#63) uses expo-image-picker's library picker (PHPicker / Android photo picker), which
+  needs no permission. `src/services/TargetPhotoService.ts` keeps a copy in
+  `Documents/targets/` only after `src/utils/imageMetadata.ts` has removed EXIF/XMP/IPTC
+  -- a photo's GPS would otherwise contradict the longitude claim above -- and refuses
+  formats it cannot clean. Keep `allowsEditing` and `exif` off, and never add the
+  expo-image-picker config plugin.
+- **Barometric pressure is read on request, and only that.** On a device with a
+  barometer, "Read Barometer" on `EnvironmentInput` takes a few samples through
+  expo-sensors and releases the sensor (`src/services/deviceBarometer.ts`). On iOS
+  this is CMAltimeter, which sits behind the Motion & Fitness permission, so
+  `NSMotionUsageDescription` is declared (through the expo-sensors plugin) and is no
+  longer trimmed. Only the resulting station pressure is stored, as an ordinary
+  pressure value; no movement or activity data is read. Android needs no permission
+  for it, and `ACTIVITY_RECOGNITION` stays blocked. (#62)
 - **User-initiated exports are the only egress.** A full JSON backup includes the
-  coarsened latitude, and the export flow warns and offers to omit it.
+  coarsened latitude, and the export flow warns and offers to omit it. On Android
+  the user may pick an export folder (SAF, `src/services/exportFolder.ts`, #215);
+  manual exports then also save a copy there before the share sheet opens. Only
+  manual exports go through `deliverExport` -- never an automatic backup or Share
+  Latest Backup.
+- **Automatic backups (#66) stay on the device** in `backups/` under the app's
+  documents directory, newest seven kept, and never contain latitude (so deleting
+  stored location data leaves no copy behind). They leave only via the user's own
+  _Share Latest Backup_.
 
 ### Constraints for new code
 
@@ -241,5 +264,16 @@ because this section said the app collected nothing while it was storing precise
   in `PRIVACY.md`. `plugins/withTrimmedIosPermissions.js` deletes the placeholder usage
   descriptions Expo's template seeds, and `android.blockedPermissions` does the same on
   Android -- do not add a permission back without code that uses it.
-- There is **no** biometric or passcode lock. `description.md` used to promise one; it
-  does not exist and is not planned. Do not cite it as an existing control.
+- The app lock is **accepted but not yet shipped** (ADR-015, #67). It will use the
+  device's own authentication through `expo-local-authentication` -- Face ID, Touch ID
+  or fingerprint, falling back to the device passcode -- opt-in and off by default.
+  Until the gate lands, `appLockEnabled` is stored but nothing reads it and Settings
+  does not show it, so do not cite a lock as an existing control. Once it ships it
+  gates the UI only: it is not encryption, and the database and exports stay
+  unencrypted. Every description of it must say so.
+- The app lock's permissions are the **one deliberate exception** to "no permission
+  without code that uses it". `NSFaceIDUsageDescription` (set by the
+  `expo-local-authentication` plugin in `app.config.ts`) and the Android
+  `USE_BIOMETRIC` / `USE_FINGERPRINT` permissions it adds are declared ahead of the
+  gate, and `PRIVACY.md` says so. Do not trim them. Delete this bullet when the gate
+  ships.

@@ -66,17 +66,22 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         'android.permission.ACCESS_FINE_LOCATION',
       ],
       blockedPermissions: [
-        // expo-image-picker is a dependency but is not used anywhere in `src/`. Left
-        // unblocked, autolinking would add CAMERA and media permissions that the app
-        // never exercises -- a broader manifest than the app can justify.
+        // expo-image-picker is used for one thing: choosing a target photo (#63) with
+        // `launchImageLibraryAsync`, which opens the system photo picker
+        // (PickVisualMedia). That needs no permission -- the picker grants access to
+        // the chosen image only -- and the app never opens the camera. Left
+        // unblocked, autolinking would still add CAMERA and media permissions that
+        // nothing exercises. See src/services/TargetPhotoService.ts.
         'android.permission.CAMERA',
         'android.permission.READ_MEDIA_IMAGES',
         'android.permission.READ_EXTERNAL_STORAGE',
         // expo-file-system declares both up to API 32. The app writes only to its
         // own documents directory and shares through the share sheet.
         'android.permission.WRITE_EXTERNAL_STORAGE',
-        // expo-sensors declares ACTIVITY_RECOGNITION (physical activity), and
-        // nothing in src/ uses expo-sensors.
+        // expo-sensors declares ACTIVITY_RECOGNITION (physical activity) for its
+        // pedometer and device-motion modules, neither of which the app uses. The
+        // one sensor it does read, the barometer (#62), is Sensor.TYPE_PRESSURE,
+        // which Android grants without any permission -- so this stays blocked.
         'android.permission.ACTIVITY_RECOGNITION',
         // No audio capture anywhere in the app.
         'android.permission.RECORD_AUDIO',
@@ -100,9 +105,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // expo-location carries the plugin form so the purpose string reaches both
     // platforms from one place. expo-document-picker needs no plugin or usage
     // description (UIDocumentPickerViewController is user-driven and grants access to
-    // the chosen file only). expo-image-picker is deliberately absent: nothing in
-    // `src/` uses it, and declaring camera/photo purpose strings for a capability the
-    // app never invokes is both a review risk and an unearned permission.
+    // the chosen file only). expo-image-picker's plugin is deliberately absent: the
+    // app only picks a target photo through the system pickers (PHPicker on iOS,
+    // the Android photo picker), which need no permission and no usage string. The
+    // plugin would seed camera, microphone and photo-library purpose strings for
+    // capabilities the app never invokes -- a review risk and an unearned
+    // permission. See src/services/TargetPhotoService.ts (#63).
     plugins: [
       'expo-sqlite',
       'expo-sharing',
@@ -124,9 +132,40 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           isAndroidBackgroundLocationEnabled: false,
         },
       ],
+      // The Environment screen reads the device barometer (#62). On iOS that is
+      // CMAltimeter, which Apple puts behind the Motion & Fitness permission:
+      // without NSMotionUsageDescription the app is terminated at the first read,
+      // and expo-sensors' BarometerModule.swift raises that prompt itself. The
+      // plugin form writes our string over the template's placeholder. On iOS 17.4+
+      // expo-sensors works around an OS bug by asking iOS to record 0.1 s of
+      // accelerometer data to make the prompt appear; the app never reads it.
+      // Android needs nothing: see ACTIVITY_RECOGNITION above.
+      [
+        'expo-sensors',
+        {
+          motionPermission:
+            'Mobile DOPE reads the barometer only when you tap Read Barometer, to fill ' +
+            'in station pressure for the ballistic solution. iOS lists the barometer ' +
+            'under Motion & Fitness; no movement or activity data is read or stored.',
+        },
+      ],
+      // The opt-in app lock (#67, ADR-015) unlocks with the device's own Face ID,
+      // Touch ID or fingerprint, falling back to the device passcode. iOS needs
+      // NSFaceIDUsageDescription before it will show the Face ID prompt; the
+      // plugin's default is a placeholder, so the string is set here. On Android
+      // the plugin adds USE_BIOMETRIC and USE_FINGERPRINT, which are install-time
+      // permissions with no runtime prompt.
+      [
+        'expo-local-authentication',
+        {
+          faceIDPermission:
+            'Mobile DOPE uses Face ID only to unlock the app, and only if you turn the ' +
+            'app lock on in Settings. No face data is seen or stored by the app.',
+        },
+      ],
       // Deletes the placeholder usage descriptions Expo's iOS template seeds for
-      // camera, photo library, microphone, motion and background location -- none of
-      // which this app has code to use. Must run last so it applies after the merge.
+      // camera, photo library, microphone and background location -- none of which
+      // this app has code to use. Must run last so it applies after the merge.
       './plugins/withTrimmedIosPermissions',
     ],
   };

@@ -3,7 +3,7 @@
  * User preferences and app configuration
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   ScrollView,
@@ -16,21 +16,38 @@ import {
 } from 'react-native';
 
 import { Card, Button, SegmentedControl } from '../components';
+import { ExportFolderSetting } from '../components/ExportFolderSetting';
+import { NumberInput } from '../components/NumberInput';
+import { NumberPicker } from '../components/NumberPicker';
 import { useTheme } from '../contexts/ThemeContext';
 import { environmentRepository } from '../services/database/EnvironmentRepository';
+import { isBarometerAvailable } from '../services/deviceBarometer';
 import {
   exportFullBackup,
   exportAllRifleProfilesJSON,
   exportDOPELogsCSV,
   exportDOPELogsJSON,
   exportDOPELogsPDF,
+  deleteAutomaticBackups,
+  shareLatestAutomaticBackup,
 } from '../services/ExportService';
 import { importFullBackup, importRifleProfiles, importDOPELogs } from '../services/ImportService';
 import { useAmmoStore } from '../store/useAmmoStore';
-import { useAppStore, DEFAULT_DISTANCE_PRESETS } from '../store/useAppStore';
+import { useAppStore, DEFAULT_DISTANCE_PRESETS, DEFAULT_SETTINGS } from '../store/useAppStore';
 import { useDOPEStore } from '../store/useDOPEStore';
 import { useEnvironmentStore } from '../store/useEnvironmentStore';
 import { useRifleStore } from '../store/useRifleStore';
+import { AUTOMATIC_BACKUPS_KEPT, type BackupSchedule } from '../utils/backupSchedule';
+import { MAX_BAROMETER_OFFSET_INHG, isValidBarometerOffset } from '../utils/barometer';
+import {
+  MAX_CONFIDENCE_THRESHOLD,
+  MAX_DISTANCE_DELTA_YARDS,
+  MIN_CONFIDENCE_THRESHOLD,
+  MIN_DISTANCE_DELTA_YARDS,
+  percentToThreshold,
+  thresholdPercent,
+} from '../utils/dopeSettings';
+import { formatDateTime } from '../utils/formatting';
 import { MergeStrategy } from '../utils/importMerge';
 
 import type { RootStackScreenProps } from '../navigation/types';
@@ -52,6 +69,38 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
 
   // Distance preset customization state
   const [newPresetValue, setNewPresetValue] = useState<string>('');
+
+  // Barometer calibration (#62). Shown only where the device has a barometer,
+  // the same condition under which the Environment screen offers to read it.
+  const [barometerAvailable, setBarometerAvailable] = useState(false);
+  const [barometerOffset, setBarometerOffset] = useState<number | undefined>(
+    settings.barometerOffsetInHg
+  );
+
+  useEffect(() => {
+    let mounted = true;
+    void isBarometerAvailable().then((available) => {
+      if (mounted) setBarometerAvailable(available);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  /**
+   * Keep what the user is typing, but persist only a usable offset. An offset
+   * past the limit stays in the field, where NumberInput shows the limit, and
+   * never reaches the readings. An emptied field -- or a half-typed "-", which
+   * parses as empty -- means no offset and saves 0, so a blank field never hides
+   * an old offset that is still being applied.
+   */
+  const handleBarometerOffsetChange = async (value: number | undefined) => {
+    setBarometerOffset(value);
+    const offset = value ?? 0;
+    if (isValidBarometerOffset(offset)) {
+      await updateSettings({ barometerOffsetInHg: offset });
+    }
+  };
 
   const handleAddPreset = async () => {
     const value = parseInt(newPresetValue, 10);
@@ -77,10 +126,43 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     await updateSettings({ distancePresets: newPresets });
   };
 
+  /**
+   * Puts the DOPE-assisted settings back where they started (#167 and
+   * #70 §10's "reset to defaults").
+   *
+   * Scoped to this section rather than reusing `resetSettings`, which clears
+   * the theme, the units, the custom calibers and the barometer calibration
+   * too. A shooter who wants their matching window back has not asked to lose
+   * a measured sensor offset.
+   */
+  const handleResetDopeSettings = () => {
+    Alert.alert(
+      'Reset DOPE-Assisted Aiming',
+      `Put the matching window back to ${DEFAULT_SETTINGS.dopeDistanceDeltaYards} yards, ` +
+        `the confidence threshold to ${thresholdPercent(DEFAULT_SETTINGS.dopeConfidenceThreshold)}%, ` +
+        'and the adjustment, cold-bore and heat-shift modelling back on? Nothing else changes.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          onPress: async () => {
+            await updateSettings({
+              dopeAdjustmentEnabled: DEFAULT_SETTINGS.dopeAdjustmentEnabled,
+              dopeDistanceDeltaYards: DEFAULT_SETTINGS.dopeDistanceDeltaYards,
+              dopeConfidenceThreshold: DEFAULT_SETTINGS.dopeConfidenceThreshold,
+              coldBoreModellingEnabled: DEFAULT_SETTINGS.coldBoreModellingEnabled,
+              heatShiftModellingEnabled: DEFAULT_SETTINGS.heatShiftModellingEnabled,
+            });
+          },
+        },
+      ]
+    );
+  };
+
   const handleResetPresets = () => {
     Alert.alert(
       'Reset Distance Presets',
-      'Reset to default presets (100-1000 in 100-yard increments)?',
+      'Reset to default presets (100-1000 in 25-yard increments)?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -388,6 +470,63 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     );
   };
 
+  /**
+   * Share the newest automatic backup (#66). It goes through the same share
+   * sheet as a manual export; it holds no latitude, so there is no location
+   * question to ask first.
+   */
+  const handleShareAutomaticBackup = async () => {
+    const result = await shareLatestAutomaticBackup();
+    if (!result.success) {
+      Alert.alert('Error', result.error || EXPORT_FAILED);
+    }
+  };
+
+  /**
+   * Delete the automatic backups saved on this device (#66). Choosing Manual
+   * stops new ones but keeps old ones, so without this the only way to remove
+   * them would be to uninstall the app. Manual exports are not touched.
+   */
+  const handleDeleteAutomaticBackups = () => {
+    Alert.alert(
+      'Delete Automatic Backups',
+      'This deletes every automatic backup saved on this device. Your profiles, ' +
+        'readings and DOPE logs are not affected, and backups you exported yourself ' +
+        'are kept.' +
+        // The schedule is left as it is, and with no last-run time a backup is
+        // due at once: say so rather than let a new file appear unexplained.
+        (settings.backupSchedule === 'manual'
+          ? ''
+          : '\n\nYour schedule stays on, so a new backup is saved the next time the app ' +
+            'opens. Choose Manual first to stop them.') +
+        '\n\nThis cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const deleted = deleteAutomaticBackups();
+              await updateSettings({ lastAutomaticBackupAt: undefined });
+              Alert.alert(
+                'Automatic Backups Deleted',
+                deleted === 0
+                  ? 'No automatic backups were found.'
+                  : `Deleted ${deleted} automatic backup${deleted === 1 ? '' : 's'}.`
+              );
+            } catch (error) {
+              Alert.alert(
+                'Error',
+                error instanceof Error ? error.message : 'Failed to delete automatic backups'
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const themeOptions = [
     { label: 'Dark', value: 'dark' },
     { label: 'Light', value: 'light' },
@@ -509,6 +648,25 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
           </View>
         </Card>
 
+        {/* Calibers (#67) */}
+        <Card style={styles.card}>
+          <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>Calibers</Text>
+          <Text style={[styles.settingHelp, { color: colors.text.secondary, marginBottom: 12 }]}>
+            {settings.customCalibers.length === 0
+              ? 'Add calibers that are not in the built-in list'
+              : `${settings.customCalibers.length} custom caliber${
+                  settings.customCalibers.length === 1 ? '' : 's'
+                } alongside the built-in list`}
+          </Text>
+          <Button
+            title="Manage Calibers"
+            onPress={() => navigation.navigate('Calibers')}
+            variant="secondary"
+            size="medium"
+            style={styles.button}
+          />
+        </Card>
+
         {/* Feedback */}
         <Card style={styles.card}>
           <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>Feedback</Text>
@@ -585,6 +743,167 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
           </View>
         </Card>
 
+        {/* DOPE-assisted aiming (#167). Every control says what it changes, not
+            what it is called: a "distance delta" means nothing to a shooter,
+            and the number it governs is which of their logs get a say. */}
+        <Card style={styles.card}>
+          <View style={styles.presetHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
+              DOPE-Assisted Aiming
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Reset DOPE-assisted aiming settings"
+              accessibilityHint="Puts the matching window, confidence threshold, adjustment default and barrel-state modelling back to their shipped values"
+              onPress={handleResetDopeSettings}
+            >
+              <Text style={[styles.resetLink, { color: colors.primaryText }]}>Reset</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.switchRow}>
+            <View style={styles.switchLabel}>
+              <Text style={[styles.settingLabel, { color: colors.text.primary }]}>
+                Adjust by My DOPE
+              </Text>
+              <Text style={[styles.settingHelp, { color: colors.text.secondary }]}>
+                Where the switch starts in the calculator and in a range session. On, it corrects
+                the solver&apos;s elevation and windage by what your own logs say it gets wrong in
+                conditions like today&apos;s. Off, you get the solver alone until you turn it on for
+                a shot. The solver&apos;s own figure is on screen either way.
+              </Text>
+            </View>
+            <Switch
+              value={settings.dopeAdjustmentEnabled}
+              onValueChange={async (value) => {
+                await updateSettings({ dopeAdjustmentEnabled: value });
+              }}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor={settings.dopeAdjustmentEnabled ? '#ffffff' : '#f4f3f4'}
+              accessibilityLabel="Adjust by my DOPE"
+              accessibilityHint="Sets whether the calculator and range sessions start with the DOPE adjustment on"
+              testID="dope-adjustment-default"
+            />
+          </View>
+
+          <View style={styles.settingRow}>
+            <NumberPicker
+              label="Matching Window"
+              value={settings.dopeDistanceDeltaYards}
+              onValueChange={async (value) => {
+                await updateSettings({ dopeDistanceDeltaYards: value });
+              }}
+              min={MIN_DISTANCE_DELTA_YARDS}
+              max={MAX_DISTANCE_DELTA_YARDS}
+              step={5}
+              unit="yards"
+              presets={[25, 50, 75, 100]}
+              helperText={
+                'How far from the shot a log can have been fired and still count. At 50 ' +
+                'yards, a shot at 600 is informed by logs from 550 to 650. Wider finds ' +
+                'more logs and leans on each one less, because a log at the edge of the ' +
+                'window already counts for much less than one at the exact distance.'
+              }
+            />
+          </View>
+
+          <View style={styles.settingRow}>
+            <NumberPicker
+              label="Confidence Threshold"
+              value={thresholdPercent(settings.dopeConfidenceThreshold)}
+              onValueChange={async (value) => {
+                await updateSettings({ dopeConfidenceThreshold: percentToThreshold(value) });
+              }}
+              min={thresholdPercent(MIN_CONFIDENCE_THRESHOLD)}
+              max={thresholdPercent(MAX_CONFIDENCE_THRESHOLD)}
+              step={5}
+              unit="%"
+              presets={[20, 40, 60, 80]}
+              helperText={
+                'How much the app has to believe its own elevation recommendation before ' +
+                'it uses it. Below this it shows the solver alone and says why. Raise it to be ' +
+                'told less often and trust it more when you are; lower it to use thinner ' +
+                'evidence. At 0 any single log moves the figure.'
+              }
+            />
+          </View>
+
+          <View style={styles.switchRow}>
+            <View style={styles.switchLabel}>
+              <Text style={[styles.settingLabel, { color: colors.text.primary }]}>
+                Cold-Bore Modelling
+              </Text>
+              <Text style={[styles.settingHelp, { color: colors.text.secondary }]}>
+                Whether a range session measures how far your first shot from a cold barrel lands
+                from the warm ones, and offers to dial it. Off, the session shows no cold-bore
+                figure. Either way nothing is dialled unless you turn it on for the shot.
+              </Text>
+            </View>
+            <Switch
+              value={settings.coldBoreModellingEnabled}
+              onValueChange={async (value) => {
+                await updateSettings({ coldBoreModellingEnabled: value });
+              }}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor={settings.coldBoreModellingEnabled ? '#ffffff' : '#f4f3f4'}
+              accessibilityLabel="Cold-bore modelling"
+              accessibilityHint="Sets whether range sessions measure and offer a cold-bore shift"
+              testID="cold-bore-modelling"
+            />
+          </View>
+
+          <View style={styles.switchRow}>
+            <View style={styles.switchLabel}>
+              <Text style={[styles.settingLabel, { color: colors.text.primary }]}>
+                Heat-Shift Modelling
+              </Text>
+              <Text style={[styles.settingHelp, { color: colors.text.secondary }]}>
+                Whether a range session measures how your point of impact walks as a string heats
+                the barrel, and offers to dial it. Off, the session shows no heat-shift figure.
+                Either way nothing is dialled unless you turn it on.
+              </Text>
+            </View>
+            <Switch
+              value={settings.heatShiftModellingEnabled}
+              onValueChange={async (value) => {
+                await updateSettings({ heatShiftModellingEnabled: value });
+              }}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor={settings.heatShiftModellingEnabled ? '#ffffff' : '#f4f3f4'}
+              accessibilityLabel="Heat-shift modelling"
+              accessibilityHint="Sets whether range sessions measure and offer a heat shift"
+              testID="heat-shift-modelling"
+            />
+          </View>
+        </Card>
+
+        {/* Barometer calibration (#62) */}
+        {barometerAvailable && (
+          <Card style={styles.card}>
+            <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>Barometer</Text>
+            <NumberInput
+              label="Barometer Offset"
+              helperText={
+                "Added to every reading from this phone's barometer. Compare the phone " +
+                'with a trusted station-pressure source, such as a Kestrel, and enter the ' +
+                'difference: if the phone reads 0.03 low, enter 0.03; if it reads high, ' +
+                'enter -0.03. Leave at 0 if you have nothing to compare against. A pressure ' +
+                'typed by hand is never changed.'
+              }
+              value={barometerOffset}
+              onChangeValue={handleBarometerOffsetChange}
+              min={-MAX_BAROMETER_OFFSET_INHG}
+              max={MAX_BAROMETER_OFFSET_INHG}
+              precision={2}
+              unit="inHg"
+              // The iOS decimal pad has no minus key, so the step buttons are how a
+              // negative offset is entered there.
+              showButtons
+              step={0.01}
+            />
+          </Card>
+        )}
+
         {/* Privacy */}
         <Card style={styles.card}>
           <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>Privacy</Text>
@@ -608,9 +927,61 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
           />
         </Card>
 
+        {/* Automatic Backup (#66) */}
+        <Card style={styles.card}>
+          <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
+            Automatic Backup
+          </Text>
+          <Text style={[styles.privacyBlurb, { color: colors.text.secondary }]}>
+            A full backup is saved on this device when the app opens or comes back to the
+            foreground, if one is due. The newest {AUTOMATIC_BACKUPS_KEPT} are kept. Location is
+            never included, and nothing leaves the device unless you share it.
+          </Text>
+          <View style={styles.settingRow}>
+            <Text style={[styles.settingLabel, { color: colors.text.primary }]}>Schedule</Text>
+            <SegmentedControl
+              options={[
+                { label: 'Manual', value: 'manual' },
+                { label: 'Daily', value: 'daily' },
+                { label: 'Weekly', value: 'weekly' },
+              ]}
+              selectedValue={settings.backupSchedule}
+              onValueChange={async (value) => {
+                await updateSettings({ backupSchedule: value as BackupSchedule });
+              }}
+            />
+          </View>
+          <Text style={[styles.settingHelp, styles.lastBackup, { color: colors.text.secondary }]}>
+            {settings.lastAutomaticBackupAt
+              ? `Last automatic backup: ${formatDateTime(new Date(settings.lastAutomaticBackupAt))}`
+              : 'No automatic backup yet'}
+          </Text>
+          <Button
+            title="Share Latest Backup"
+            onPress={() => void handleShareAutomaticBackup()}
+            variant="secondary"
+            size="medium"
+            style={styles.button}
+            disabled={!settings.lastAutomaticBackupAt}
+            accessibilityLabel="Share latest automatic backup"
+            accessibilityHint="Opens the share sheet with the newest backup saved on this device"
+          />
+          <Button
+            title="Delete Automatic Backups"
+            onPress={handleDeleteAutomaticBackups}
+            variant="danger"
+            size="medium"
+            style={styles.button}
+            // Not gated on lastAutomaticBackupAt: files can outlive that setting
+            // (a settings reset), and the confirmation reports when there are none.
+            accessibilityHint="Asks for confirmation, then deletes the backups saved on this device"
+          />
+        </Card>
+
         {/* Data Management */}
         <Card style={styles.card}>
           <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>Data Management</Text>
+          <ExportFolderSetting />
           <Button
             title="Export All Data"
             onPress={handleExportData}
@@ -662,6 +1033,10 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  lastBackup: {
+    fontSize: 14,
+    marginBottom: 12,
   },
   privacyBlurb: {
     fontSize: 14,

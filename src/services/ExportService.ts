@@ -3,9 +3,17 @@
  * Handles data export in various formats (JSON, CSV, PDF)
  */
 
-import { Paths, File } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+
+import {
+  automaticBackupFilename,
+  newestAutomaticBackup,
+  selectBackupsToPrune,
+} from '../utils/backupSchedule';
+
+import { deliverExport } from './exportFolder';
 
 import type { AmmoProfile } from '../models/AmmoProfile';
 import type { DOPELog } from '../models/DOPELog';
@@ -65,14 +73,11 @@ export async function exportRifleProfileJSON(rifle: RifleProfile): Promise<Expor
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export Rifle Profile',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export Rifle Profile',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -101,14 +106,11 @@ export async function exportAmmoProfileJSON(ammo: AmmoProfile): Promise<ExportRe
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export Ammo Profile',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export Ammo Profile',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -138,14 +140,11 @@ export async function exportAllRifleProfilesJSON(rifles: RifleProfile[]): Promis
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export All Rifle Profiles',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export All Rifle Profiles',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -163,7 +162,8 @@ export async function exportAllRifleProfilesJSON(rifles: RifleProfile[]): Promis
  * Hits and shots are separate columns: a log of 0 from 5 used to export as a
  * hit, and a single "3/5" cell opens in a spreadsheet as the 5th of March
  * (#138). Conditions come from each log's own snapshot, in the units the app
- * records them in. Latitude is deliberately not exported (PRIVACY.md).
+ * records them in. Barrel state (#164) exports as yes/no, or blank where it was
+ * never recorded. Latitude is deliberately not exported (PRIVACY.md).
  */
 function dopeLogsToCSV(
   logs: DOPELog[],
@@ -189,6 +189,7 @@ function dopeLogsToCSV(
     'Rifle',
     'Ammunition',
     'Distance',
+    'Distance Unit',
     'Elevation Correction',
     'Windage Correction',
     'Angular Unit',
@@ -196,6 +197,8 @@ function dopeLogsToCSV(
     'Shots',
     'Target Type',
     'Group Size',
+    'Cold Bore',
+    'Shot # in Session',
     'Temperature (°F)',
     'Humidity (%)',
     'Pressure (inHg)',
@@ -212,6 +215,8 @@ function dopeLogsToCSV(
       sanitizeCsvCell(getRifleName(log.rifleId)),
       sanitizeCsvCell(getAmmoName(log.ammoId)),
       sanitizeCsvCell(log.distance),
+      // Each log keeps its own unit (#125), so a bare distance is ambiguous.
+      sanitizeCsvCell(log.distanceUnit),
       sanitizeCsvCell(log.elevationCorrection),
       sanitizeCsvCell(log.windageCorrection),
       sanitizeCsvCell(log.correctionUnit),
@@ -219,6 +224,10 @@ function dopeLogsToCSV(
       sanitizeCsvCell(log.shotCount),
       sanitizeCsvCell(log.targetType),
       sanitizeCsvCell(log.groupSize),
+      // Empty, not "no": barrel state is unrecorded on every log from before
+      // #164, and a blank cell says that where a `no` would misreport it.
+      sanitizeCsvCell(log.coldBoreShot === undefined ? '' : log.coldBoreShot ? 'yes' : 'no'),
+      sanitizeCsvCell(log.shotNumberInSession),
       sanitizeCsvCell(env?.temperature),
       sanitizeCsvCell(env?.humidity),
       sanitizeCsvCell(env?.pressure),
@@ -250,14 +259,11 @@ export async function exportDOPELogsCSV(
     const csvContent = dopeLogsToCSV(logs, rifles, ammos, environments);
     await file.write(csvContent);
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'text/csv',
-        dialogTitle: 'Export DOPE Logs',
-        UTI: 'public.comma-separated-values-text',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'text/csv',
+      dialogTitle: 'Export DOPE Logs',
+      UTI: 'public.comma-separated-values-text',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -287,14 +293,11 @@ export async function exportDOPELogsJSON(logs: DOPELog[]): Promise<ExportResult>
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export DOPE Logs',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export DOPE Logs',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -535,14 +538,15 @@ export async function exportDOPELogsPDF(
       base64: false,
     });
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(uri, {
+    await deliverExport(
+      uri,
+      {
         mimeType: 'application/pdf',
         dialogTitle: 'Export DOPE Logs PDF',
         UTI: 'com.adobe.pdf',
-      });
-    }
+      },
+      `dope_logs_${Date.now()}.pdf`
+    );
 
     return { success: true, uri };
   } catch (error) {
@@ -568,6 +572,78 @@ export interface FullBackupOptions {
 }
 
 /**
+ * The full backup document, as written to disk.
+ *
+ * Shared by the manual export and the automatic backup (#66) so the two can
+ * never drift apart: a file the scheduler wrote restores through exactly the
+ * same Import > Full Backup path as one the shooter exported.
+ */
+function serialiseFullBackup(
+  rifles: RifleProfile[],
+  ammos: AmmoProfile[],
+  logs: DOPELog[],
+  environments: EnvironmentSnapshot[],
+  includeCoordinates: boolean
+): string {
+  const data = {
+    exportDate: new Date().toISOString(),
+    // 1.1 added `environments`. Without them a restored DOPE log has no environment row to
+    // reference, and since environment_id is NOT NULL with a foreign key, every log failed
+    // to import -- see issue #39. Importers must keep reading 1.0 files, but cannot
+    // recover logs from them.
+    exportVersion: '1.1',
+    type: 'full_backup',
+    data: {
+      rifles: rifles.map((r) => r.toJSON()),
+      ammos: ammos.map((a) => a.toJSON()),
+      environments: environments.map((e) => {
+        const json = e.toJSON();
+        if (includeCoordinates) return json;
+        // `id` must survive: DOPE logs reference it on restore (issue #39).
+        const { latitude: _latitude, ...withoutCoordinates } = json;
+        return withoutCoordinates;
+      }),
+      logs: logs.map((l) => l.toJSON()),
+    },
+    counts: {
+      rifles: rifles.length,
+      ammos: ammos.length,
+      environments: environments.length,
+      logs: logs.length,
+    },
+  };
+  return JSON.stringify(data, null, 2);
+}
+
+/** Share-sheet details for a full backup file. */
+const FULL_BACKUP_SHARE = {
+  mimeType: 'application/json',
+  dialogTitle: 'Export Full Backup',
+  UTI: 'public.json',
+};
+
+/**
+ * Hand a full backup file to the system share sheet, where one is available.
+ * Used for Share Latest Backup, which never copies to the export folder: an
+ * automatic backup stays in private storage unless shared (#215).
+ */
+async function shareBackupFile(uri: string): Promise<void> {
+  const canShare = await Sharing.isAvailableAsync();
+  if (canShare) {
+    await Sharing.shareAsync(uri, FULL_BACKUP_SHARE);
+  }
+}
+
+/** Failure result for a caught error, in the shape every exporter returns. */
+function failure(context: string, error: unknown): ExportResult {
+  console.error(`Error ${context}:`, error);
+  return {
+    success: false,
+    error: error instanceof Error ? error.message : 'Unknown error',
+  };
+}
+
+/**
  * Export full database backup (all data)
  */
 export async function exportFullBackup(
@@ -582,52 +658,112 @@ export async function exportFullBackup(
     const filename = `mobiledope_backup_${Date.now()}.json`;
     const file = new File(Paths.document, filename);
 
-    const data = {
-      exportDate: new Date().toISOString(),
-      // 1.1 added `environments`. Without them a restored DOPE log has no environment row to
-      // reference, and since environment_id is NOT NULL with a foreign key, every log failed
-      // to import -- see issue #39. Importers must keep reading 1.0 files, but cannot
-      // recover logs from them.
-      exportVersion: '1.1',
-      type: 'full_backup',
-      data: {
-        rifles: rifles.map((r) => r.toJSON()),
-        ammos: ammos.map((a) => a.toJSON()),
-        environments: environments.map((e) => {
-          const json = e.toJSON();
-          if (includeCoordinates) return json;
-          // `id` must survive: DOPE logs reference it on restore (issue #39).
-          const { latitude: _latitude, ...withoutCoordinates } = json;
-          return withoutCoordinates;
-        }),
-        logs: logs.map((l) => l.toJSON()),
-      },
-      counts: {
-        rifles: rifles.length,
-        ammos: ammos.length,
-        environments: environments.length,
-        logs: logs.length,
-      },
-    };
+    await file.write(serialiseFullBackup(rifles, ammos, logs, environments, includeCoordinates));
+    await deliverExport(file.uri, FULL_BACKUP_SHARE);
 
-    await file.write(JSON.stringify(data, null, 2));
+    return { success: true, uri: file.uri };
+  } catch (error) {
+    return failure('exporting full backup', error);
+  }
+}
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export Full Backup',
-        UTI: 'public.json',
-      });
+/**
+ * Folder in the app's documents that holds automatic backups (#66). The same
+ * private storage area as the database itself, so it adds no new place the
+ * data can be read from.
+ */
+const automaticBackupDirectory = () => new Directory(Paths.document, 'backups');
+
+/** The files directly inside the automatic backup folder. */
+const automaticBackupFiles = (directory: Directory): File[] =>
+  directory.list().filter((entry): entry is File => entry instanceof File);
+
+/**
+ * Write an automatic full backup, then delete all but the newest
+ * `AUTOMATIC_BACKUPS_KEPT`. Nothing is shared.
+ *
+ * Latitude is always left out. The file outlives the database rows it was
+ * taken from -- Settings > Privacy > Delete Stored Location Data clears the
+ * rows, and a backup holding the latitude would quietly keep it for up to
+ * seven more runs. It would also let a later "Share Latest Backup" send the
+ * coordinates without the warning the manual export gives (#44). A restore
+ * from it is complete apart from the latitude, as with a manual backup
+ * exported without location.
+ */
+export async function saveAutomaticBackup(
+  rifles: RifleProfile[],
+  ammos: AmmoProfile[],
+  logs: DOPELog[],
+  environments: EnvironmentSnapshot[],
+  now: Date
+): Promise<ExportResult> {
+  try {
+    const directory = automaticBackupDirectory();
+    directory.create({ intermediates: true, idempotent: true });
+
+    const existing = automaticBackupFiles(directory).map((entry) => entry.name);
+    const file = new File(directory, automaticBackupFilename(now, existing));
+    await file.write(serialiseFullBackup(rifles, ammos, logs, environments, false));
+
+    const files = automaticBackupFiles(directory);
+    const stale = new Set(selectBackupsToPrune(files.map((entry) => entry.name)));
+    for (const entry of files) {
+      if (stale.has(entry.name)) entry.delete();
     }
 
     return { success: true, uri: file.uri };
   } catch (error) {
-    console.error('Error exporting full backup:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
+    return failure('writing automatic backup', error);
+  }
+}
+
+/**
+ * Delete every automatic backup on the device (#66), leaving any other file --
+ * a manual export included -- alone.
+ *
+ * @returns How many files were deleted.
+ */
+export function deleteAutomaticBackups(): number {
+  const directory = automaticBackupDirectory();
+  if (!directory.exists) return 0;
+  const files = automaticBackupFiles(directory);
+  const automatic = new Set(
+    selectBackupsToPrune(
+      files.map((entry) => entry.name),
+      0
+    )
+  );
+  let deleted = 0;
+  for (const entry of files) {
+    if (automatic.has(entry.name)) {
+      entry.delete();
+      deleted++;
+    }
+  }
+  return deleted;
+}
+
+/** Uri of the newest automatic backup on the device, or undefined if there is none. */
+export function latestAutomaticBackupUri(): string | undefined {
+  const directory = automaticBackupDirectory();
+  if (!directory.exists) return undefined;
+  const files = automaticBackupFiles(directory);
+  const newest = newestAutomaticBackup(files.map((entry) => entry.name));
+  return files.find((entry) => entry.name === newest)?.uri;
+}
+
+/**
+ * Share the newest automatic backup through the same share sheet as a manual
+ * export. It holds no latitude, so there is no location warning to give.
+ */
+export async function shareLatestAutomaticBackup(): Promise<ExportResult> {
+  try {
+    const uri = latestAutomaticBackupUri();
+    if (!uri) return { success: false, error: 'No automatic backup has been saved yet.' };
+    await shareBackupFile(uri);
+    return { success: true, uri };
+  } catch (error) {
+    return failure('sharing automatic backup', error);
   }
 }
 
@@ -787,14 +923,11 @@ export async function exportSessionReportMarkdown(
     const markdownContent = generateSessionReportMarkdown(session, rifle, ammo, environment);
     await file.write(markdownContent);
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'text/markdown',
-        dialogTitle: 'Export Session Report',
-        UTI: 'net.daringfireball.markdown',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'text/markdown',
+      dialogTitle: 'Export Session Report',
+      UTI: 'net.daringfireball.markdown',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -832,14 +965,11 @@ export async function exportSessionReportJSON(
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export Session Report',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export Session Report',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -1241,14 +1371,15 @@ export async function exportSessionReportPDF(
       base64: false,
     });
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(uri, {
+    await deliverExport(
+      uri,
+      {
         mimeType: 'application/pdf',
         dialogTitle: 'Export Session Report PDF',
         UTI: 'com.adobe.pdf',
-      });
-    }
+      },
+      `session_report_${Date.now()}.pdf`
+    );
 
     return { success: true, uri };
   } catch (error) {
@@ -1478,14 +1609,15 @@ export async function exportBallisticSolutionPDF(
       base64: false,
     });
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(uri, {
+    await deliverExport(
+      uri,
+      {
         mimeType: 'application/pdf',
         dialogTitle: 'Export Ballistic Solution',
         UTI: 'com.adobe.pdf',
-      });
-    }
+      },
+      `ballistic_solution_${Date.now()}.pdf`
+    );
 
     return { success: true, uri };
   } catch (error) {

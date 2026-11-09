@@ -16,9 +16,16 @@ const { withInfoPlist } = require('expo/config-plugins');
  * both a review question and a promise the app cannot keep. This deletes them
  * after the merge, which is the only point at which they exist.
  *
- * `NSLocationWhenInUseUsageDescription` is deliberately NOT in this list -- it is
- * the one permission the app genuinely uses, and its string is set in
- * `app.config.ts`. See issue #44.
+ * `NSLocationWhenInUseUsageDescription` is deliberately NOT in this list -- the
+ * app genuinely uses it, and its string is set in `app.config.ts`. See issue #44.
+ *
+ * Nor is `NSMotionUsageDescription`, since #62: the Environment screen reads the
+ * device barometer, which iOS gates behind Motion & Fitness. Its string is set by
+ * the expo-sensors plugin in `app.config.ts`, replacing the template placeholder.
+ *
+ * Nor is `NSFaceIDUsageDescription`, since #67 (ADR-015): the opt-in app lock asks
+ * for Face ID through expo-local-authentication, whose plugin in `app.config.ts`
+ * sets the string. It is declared ahead of the lock gate; see CLAUDE.md.
  *
  * @param {import('expo/config').ExpoConfig} config
  * @returns {import('expo/config').ExpoConfig}
@@ -29,15 +36,17 @@ const withTrimmedIosPermissions = (config) =>
       // Foreground location only: there is no background location code path.
       'NSLocationAlwaysUsageDescription',
       'NSLocationAlwaysAndWhenInUseUsageDescription',
-      // expo-image-picker is an unused dependency; nothing in src/ opens a camera
-      // or the photo library.
+      // No camera is opened anywhere. A target photo is chosen with
+      // expo-image-picker's library picker with editing off, which is
+      // PHPickerViewController: it runs outside the app and needs no photo-library
+      // access, so these strings would only advertise access the app never asks
+      // for (#63). Keep `allowsEditing` and `exif` off there -- see
+      // src/services/TargetPhotoService.ts.
       'NSCameraUsageDescription',
       'NSPhotoLibraryUsageDescription',
       'NSPhotoLibraryAddUsageDescription',
       // No audio capture anywhere in the app.
       'NSMicrophoneUsageDescription',
-      // expo-sensors is a dependency but no sensor is read.
-      'NSMotionUsageDescription',
     ];
 
     for (const key of unearned) {

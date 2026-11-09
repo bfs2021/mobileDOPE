@@ -20,8 +20,9 @@ export class DOPELogRepository {
       `INSERT INTO dope_logs (
         rifle_id, ammo_id, environment_id, distance, distance_unit,
         elevation_correction, windage_correction, correction_unit,
-        target_type, group_size, hit_count, shot_count, notes, timestamp
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))`,
+        target_type, group_size, hit_count, shot_count,
+        cold_bore_shot, shot_number_in_session, notes, timestamp
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))`,
       [
         log.rifleId,
         log.ammoId,
@@ -36,13 +37,36 @@ export class DOPELogRepository {
         log.groupSize ?? null,
         log.hitCount ?? null,
         log.shotCount ?? null,
+        // Barrel state unrecorded stays NULL: a 0 would claim a warm bore
+        // nobody observed, and #165 reads these as evidence.
+        log.coldBoreShot === undefined ? null : log.coldBoreShot ? 1 : 0,
+        log.shotNumberInSession ?? null,
         log.notes || null,
         log.timestamp ?? null,
       ]
     );
 
     log.id = result.lastInsertRowId;
+    // Read back the INSERT's `datetime('now')` when no timestamp was supplied
+    // (#229): the store adds this log to the list as returned, and the list
+    // sorts by date, so a log without one sank to the bottom, undated, until a
+    // reload.
+    log.timestamp = await this.resolveTimestamp(log.id, log.timestamp);
     return log;
+  }
+
+  /**
+   * The timestamp a log was stored with: the one supplied, or else the
+   * `datetime('now')` the INSERT's COALESCE fell back to.
+   */
+  private async resolveTimestamp(id: number, supplied?: string): Promise<string | undefined> {
+    if (supplied !== undefined) return supplied;
+    const db = databaseService.getDatabase();
+    const row = await db.getFirstAsync<{ timestamp: string }>(
+      'SELECT timestamp FROM dope_logs WHERE id = ?',
+      [id]
+    );
+    return row?.timestamp;
   }
 
   /**
@@ -68,6 +92,26 @@ export class DOPELogRepository {
     );
 
     return rows.map((row) => DOPELog.fromRow(row));
+  }
+
+  /**
+   * When this rifle last fired, as the timestamp of its most recent DOPE log,
+   * or `undefined` if it has none.
+   *
+   * One row, not the rifle's whole history: New DOPE Log only needs the gap
+   * since the last shot to suggest cold bore (#164), and the in-memory store
+   * is no use for it -- only DOPE Logs fills that, so a shooter who opens New
+   * DOPE Log directly would be judged against an empty list.
+   */
+  async getLastFiredAt(rifleId: number): Promise<string | undefined> {
+    const db = databaseService.getDatabase();
+
+    const row = await db.getFirstAsync<{ timestamp: string }>(
+      'SELECT timestamp FROM dope_logs WHERE rifle_id = ? ORDER BY timestamp DESC LIMIT 1',
+      [rifleId]
+    );
+
+    return row?.timestamp;
   }
 
   /**
@@ -157,7 +201,8 @@ export class DOPELogRepository {
         rifle_id = ?, ammo_id = ?, environment_id = ?, distance = ?,
         distance_unit = ?, elevation_correction = ?, windage_correction = ?,
         correction_unit = ?, target_type = ?, group_size = ?,
-        hit_count = ?, shot_count = ?, notes = ?
+        hit_count = ?, shot_count = ?, cold_bore_shot = ?,
+        shot_number_in_session = ?, notes = ?
       WHERE id = ?`,
       [
         updated.rifleId,
@@ -172,6 +217,8 @@ export class DOPELogRepository {
         updated.groupSize ?? null,
         updated.hitCount ?? null,
         updated.shotCount ?? null,
+        updated.coldBoreShot === undefined ? null : updated.coldBoreShot ? 1 : 0,
+        updated.shotNumberInSession ?? null,
         updated.notes || null,
         id,
       ]

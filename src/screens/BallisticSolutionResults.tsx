@@ -3,13 +3,14 @@
  * Displays calculated ballistic solution for a target
  */
 
-import React, { useMemo, useState } from 'react';
-import { View, ScrollView, Text, StyleSheet, Alert } from 'react-native';
+import React, { useState } from 'react';
+import { View, ScrollView, Text, StyleSheet, Alert, Switch } from 'react-native';
 
 import { Card, Button } from '../components';
+import { AdjustmentConfidenceBadge } from '../components/AdjustmentConfidenceBadge';
 import { RelevantDopeList } from '../components/RelevantDopeList';
 import { useTheme } from '../contexts/ThemeContext';
-import { useSnapshotsFor } from '../hooks/useSnapshotsFor';
+import { useDopeAdjustment } from '../hooks/useDopeAdjustment';
 import { exportBallisticSolutionPDF } from '../services/ExportService';
 import { useAmmoStore } from '../store/useAmmoStore';
 import { useAppStore } from '../store/useAppStore';
@@ -21,16 +22,27 @@ import {
   describeAdvancedCorrections,
 } from '../utils/advancedCorrections';
 import { toSolverYards } from '../utils/distanceUnits';
-import { rankMatches } from '../utils/dopeMatching';
+import { SOLVER_ONLY_REASON } from '../utils/dopeAdjustment';
+import { calculateCrosswindComponent } from '../utils/windTable';
 
 import type { DOPELogData } from '../models/DOPELog';
 import type { CalculatorStackScreenProps } from '../navigation/types';
-import type { MatchableEnvironment } from '../utils/dopeMatching';
 
 type Props = CalculatorStackScreenProps<'BallisticSolutionResults'>;
 
 export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation }) => {
-  const { solution, rifleId, ammoId, distance, distanceUnit, angularUnit } = route.params;
+  const {
+    solution,
+    rifleId,
+    ammoId,
+    distance,
+    distanceUnit,
+    angularUnit,
+    windSpeed: solvedWindSpeed,
+    windDirection: solvedWindDirection,
+    gustSpeed,
+    gustSolution,
+  } = route.params;
   const { settings } = useAppStore();
 
   /**
@@ -48,57 +60,77 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
   const baseElevation =
     angularUnit === 'MIL' ? adjusted.baseElevationMIL : adjusted.baseElevationMOA;
   const baseWindage = angularUnit === 'MIL' ? adjusted.baseWindageMIL : adjusted.baseWindageMOA;
+
+  /**
+   * The hold in the gust (#220), through the same advanced-corrections setting
+   * as the lull so the two ends of the bracket are like for like. Absent without
+   * a gust, and then nothing on screen changes.
+   */
+  const gustAdjusted =
+    gustSolution === undefined
+      ? undefined
+      : applyAdvancedCorrections(gustSolution, { enabled: settings.advancedBallisticsEnabled });
+  const gustWindage =
+    gustAdjusted === undefined
+      ? undefined
+      : angularUnit === 'MIL'
+        ? gustAdjusted.windageMIL
+        : gustAdjusted.windageMOA;
   const { theme } = useTheme();
   const { colors } = theme;
 
   const { getRifleById } = useRifleStore();
   const { getAmmoById } = useAmmoStore();
-  const { current: currentEnv, saveCurrent, snapshots } = useEnvironmentStore();
-  const { createDopeLog, dopeLogs } = useDOPEStore();
-
-  /**
-   * The shooter's own logged DOPE that resembles this shot (#70).
-   *
-   * Logs carry an `environmentId` rather than the conditions themselves, so the
-   * snapshot is joined on here -- without it every log scores neutral on the
-   * environment factor and the ranking collapses to distance and recency.
-   *
-   * The store holds only recent snapshots -- the Dashboard loads one -- so each
-   * candidate log's own snapshot is loaded by id and joined over the store's
-   * (#122). Reading the store alone left nearly every log neutral.
-   */
-  const candidateLogs = useMemo(
-    () => dopeLogs.filter((log) => log.rifleId === rifleId && log.ammoId === ammoId),
-    [dopeLogs, rifleId, ammoId]
-  );
-  const loadedSnapshots = useSnapshotsFor(candidateLogs);
-
-  const relevantDope = useMemo(() => {
-    if (dopeLogs.length === 0) return [];
-
-    const environmentById = new Map<number | undefined, MatchableEnvironment>([
-      ...snapshots.map((snapshot) => [snapshot.id, snapshot] as const),
-      ...(loadedSnapshots ?? []),
-    ]);
-
-    const matchable: (DOPELogData & { environment?: MatchableEnvironment })[] = dopeLogs.map(
-      (log) => ({
-        ...log,
-        environment: environmentById.get(log.environmentId),
-      })
-    );
-
-    return rankMatches(matchable, {
-      rifleId,
-      ammoId,
-      // The solver's unit, because that is what the matcher compares against.
-      distance: toSolverYards(distance, distanceUnit),
-      environment: currentEnv ?? undefined,
-    });
-  }, [dopeLogs, snapshots, loadedSnapshots, rifleId, ammoId, distance, distanceUnit, currentEnv]);
+  const { current: currentEnv, saveCurrent } = useEnvironmentStore();
+  const { createDopeLog } = useDOPEStore();
 
   const rifle = getRifleById(rifleId);
   const ammo = getAmmoById(ammoId);
+
+  /**
+   * Today's elevation, adjusted by what the shooter's own relevant DOPE says the
+   * solver gets wrong (#168), gated on confidence (#161). The ranking, the
+   * per-snapshot predictions and the gate live in `useDopeAdjustment`, which
+   * range session mode shares (#166). The solver's own figure is always on
+   * screen, whatever the switch says.
+   */
+  const [adjustByDope, setAdjustByDope] = useState(settings.dopeAdjustmentEnabled);
+
+  const {
+    relevantDope,
+    dopeAdjusted,
+    confident,
+    interpolated,
+    applied,
+    shownConfidence,
+    adjustmentApplies,
+    shownElevation,
+    windage: windageAdjustment,
+    windageCaption: windageBasis,
+    windageApplies,
+    shownWindage,
+  } = useDopeAdjustment({
+    rifleId,
+    ammoId,
+    // The solver's unit, because that is what the matcher compares against.
+    distanceYards: toSolverYards(distance, distanceUnit),
+    solverElevation: elevation,
+    unit: angularUnit,
+    enabled: adjustByDope,
+    // #163: the windage half, normalised by the crosswind each log was shot in.
+    // Today's crosswind comes from the same `calculateCrosswindComponent` the
+    // wind table and the solver use, from the wind the solution was solved in.
+    // That is the calculator's own input, not the environment store's: scaling
+    // by the store's wind would correct a calm solution for a wind it was never
+    // solved in. The store is only the fallback for a caller that omits it.
+    solverWindage: windage,
+    crosswindMph:
+      solvedWindSpeed !== undefined && solvedWindDirection !== undefined
+        ? calculateCrosswindComponent(solvedWindSpeed, solvedWindDirection)
+        : currentEnv === null
+          ? 0
+          : calculateCrosswindComponent(currentEnv.windSpeed, currentEnv.windDirection),
+  });
 
   const [isExporting, setIsExporting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -168,6 +200,13 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
         // solution that reached this screen. (#106)
         distance,
         distanceUnit,
+        // The solver's own figure, deliberately, even when the headline shows
+        // the adjusted one (#185). Every offset in `adjustElevation` is logged
+        // minus solver-predicted, so a log holding an adjusted elevation would
+        // be read back as further disagreement with the solver and shift the
+        // next solution again -- the offset compounding once per save. What is
+        // worth recording is what the rifle did, not what the app suggested.
+        // The note under the save button says so on screen.
         elevationCorrection: elevation,
         windageCorrection: windage,
         correctionUnit: angularUnit,
@@ -217,9 +256,14 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
           </Text>
           <View style={styles.primaryResult}>
             <View style={styles.primaryColumn}>
-              <Text style={[styles.primaryLabel, { color: colors.text.secondary }]}>ELEVATION</Text>
-              <Text style={[styles.primaryValue, { color: colors.primaryText }]}>
-                {elevation.toFixed(2)}
+              <Text style={[styles.primaryLabel, { color: colors.text.secondary }]}>
+                {adjustmentApplies ? 'ELEVATION (ADJUSTED)' : 'ELEVATION'}
+              </Text>
+              <Text
+                style={[styles.primaryValue, { color: colors.primaryText }]}
+                testID="elevation-value"
+              >
+                {shownElevation.toFixed(2)}
               </Text>
               <Text style={[styles.primaryUnit, { color: colors.text.secondary }]}>
                 {angularUnit}
@@ -227,15 +271,47 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
             </View>
             <View style={[styles.divider, { backgroundColor: colors.border }]} />
             <View style={styles.primaryColumn}>
-              <Text style={[styles.primaryLabel, { color: colors.text.secondary }]}>WINDAGE</Text>
-              <Text style={[styles.primaryValue, { color: colors.primaryText }]}>
-                {windage.toFixed(2)}
+              <Text style={[styles.primaryLabel, { color: colors.text.secondary }]}>
+                {windageApplies ? 'WINDAGE (ADJUSTED)' : 'WINDAGE'}
+              </Text>
+              <Text
+                style={[styles.primaryValue, { color: colors.primaryText }]}
+                testID="windage-value"
+              >
+                {(windageApplies ? (shownWindage ?? windage) : windage).toFixed(2)}
               </Text>
               <Text style={[styles.primaryUnit, { color: colors.text.secondary }]}>
                 {angularUnit}
               </Text>
             </View>
           </View>
+          {/* Gusting wind (#220): the hold for the lull and the hold for the
+              gust, not one averaged figure. Both are the solver's; a DOPE
+              windage offset above is not applied to them, so when the headline
+              is adjusted the caption says whose holds these are. */}
+          {gustWindage !== undefined && gustSpeed !== undefined && (
+            <View style={styles.windageBlock}>
+              <View style={styles.infoRow}>
+                <Text style={[styles.infoLabel, { color: colors.text.secondary }]}>
+                  Windage bracket:
+                </Text>
+                <Text
+                  style={[styles.infoValue, { color: colors.text.primary }]}
+                  testID="windage-bracket"
+                >
+                  {`${windage.toFixed(2)} to ${gustWindage.toFixed(2)} ${angularUnit}`}
+                </Text>
+              </View>
+              <Text
+                style={[styles.matchesCaption, { color: colors.text.secondary }]}
+                testID="windage-bracket-caption"
+              >
+                {`${solvedWindSpeed ?? 0} mph lull, ${gustSpeed} mph gust${
+                  windageApplies ? '. Solver holds, without the DOPE offset' : ''
+                }`}
+              </Text>
+            </View>
+          )}
         </Card>
 
         {/* Advanced corrections, shown separately from the base solution (#71).
@@ -275,15 +351,153 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
           </Card>
         )}
 
-        {/* What this shooter actually dialled in conditions like these (#70) */}
+        {/* What this shooter actually dialled in conditions like these (#70),
+            and the adjustment derived from it (#168). The solver's own figure
+            is always on screen, whatever the switch says. */}
         <Card style={styles.card}>
           <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
             Your logged DOPE
           </Text>
-          <Text style={[styles.matchesCaption, { color: colors.text.secondary }]}>
-            Shown beside the solution, not merged into it.
-          </Text>
-          <RelevantDopeList matches={relevantDope} testID="relevant-dope" />
+
+          <View style={styles.adjustRow}>
+            <Text style={[styles.adjustLabel, { color: colors.text.primary }]}>
+              Adjust by my DOPE
+            </Text>
+            <Switch
+              value={adjustByDope}
+              onValueChange={setAdjustByDope}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor={adjustByDope ? '#ffffff' : '#f4f3f4'}
+              accessibilityLabel="Adjust by my DOPE"
+              accessibilityHint="Off shows the solver's own elevation with no correction from your logs"
+              testID="dope-adjust-switch"
+            />
+          </View>
+
+          {applied ? (
+            <View testID="dope-adjustment-summary">
+              <View style={styles.infoRow}>
+                <Text style={[styles.infoLabel, { color: colors.text.secondary }]}>
+                  Solver alone:
+                </Text>
+                <Text style={[styles.infoValue, { color: colors.text.primary }]}>
+                  {elevation.toFixed(2)} {angularUnit}
+                </Text>
+              </View>
+              <View style={styles.infoRow}>
+                <Text style={[styles.infoLabel, { color: colors.text.secondary }]}>
+                  Offset applied:
+                </Text>
+                <Text style={[styles.infoValue, { color: colors.text.primary }]}>
+                  {applied.offset >= 0 ? '+' : ''}
+                  {applied.offset.toFixed(2)} {angularUnit}
+                </Text>
+              </View>
+              <Text
+                style={[styles.matchesCaption, { color: colors.text.secondary }]}
+                testID="dope-adjustment-caption"
+              >
+                {applied.caption}
+              </Text>
+              {/* Past the last log there is no measurement on the far side, and
+                  the shooter should know the figure leans on one that is not
+                  here (#162). Said in words, not only a tint (WCAG 1.4.1). */}
+              {applied.extrapolated && (
+                <Text
+                  style={[styles.extrapolatedWarning, { color: colors.text.primary }]}
+                  testID="dope-extrapolated-warning"
+                >
+                  Beyond your logged distances — confirm with a sighter.
+                </Text>
+              )}
+            </View>
+          ) : (
+            <Text style={[styles.matchesCaption, { color: colors.text.secondary }]}>
+              {adjustByDope
+                ? (confident?.reason ?? dopeAdjusted?.reason ?? SOLVER_ONLY_REASON)
+                : 'Adjustment off. Showing the solver alone.'}
+            </Text>
+          )}
+
+          {/* The windage half (#163). Separate from the elevation summary above
+              because it can succeed or fail for its own reasons -- there may be
+              plenty of logs to rank and not one of them shot in a crosswind --
+              and a shooter dialling wind needs to know which. */}
+          {adjustByDope && windageAdjustment !== undefined && (
+            <View style={styles.windageBlock} testID="dope-windage">
+              {windageApplies ? (
+                <>
+                  <View style={styles.infoRow}>
+                    <Text style={[styles.infoLabel, { color: colors.text.secondary }]}>
+                      Solver windage:
+                    </Text>
+                    <Text style={[styles.infoValue, { color: colors.text.primary }]}>
+                      {windageAdjustment.solverWindage.toFixed(2)} {angularUnit}
+                    </Text>
+                  </View>
+                  <View style={styles.infoRow}>
+                    <Text style={[styles.infoLabel, { color: colors.text.secondary }]}>
+                      Windage offset:
+                    </Text>
+                    <Text
+                      style={[styles.infoValue, { color: colors.text.primary }]}
+                      testID="dope-windage-offset"
+                    >
+                      {windageAdjustment.offset >= 0 ? '+' : ''}
+                      {windageAdjustment.offset.toFixed(2)} {angularUnit}
+                    </Text>
+                  </View>
+                  <Text
+                    style={[styles.matchesCaption, { color: colors.text.secondary }]}
+                    testID="dope-windage-caption"
+                  >
+                    {windageBasis}
+                  </Text>
+                </>
+              ) : (
+                <Text
+                  style={[styles.matchesCaption, { color: colors.text.secondary }]}
+                  testID="dope-windage-caption"
+                >
+                  {windageAdjustment.reason}
+                </Text>
+              )}
+            </View>
+          )}
+
+          {/* Confidence in the adjustment itself (#161), as distinct from the
+              per-log confidence `RelevantDopeList` shows against each entry.
+              Rendered whenever there are logs to judge -- including when the
+              figure was too low to apply, which is the case the shooter most
+              needs the reasons for. Hidden while the switch is off, where it
+              would be describing a number that is not on screen. When the
+              figure was interpolated (#162) it is that figure's confidence. */}
+          {adjustByDope &&
+            shownConfidence !== undefined &&
+            shownConfidence.contributingLogs > 0 && (
+              <View style={styles.confidenceBlock}>
+                <Text style={[styles.infoLabel, { color: colors.text.secondary }]}>
+                  Confidence in this adjustment
+                </Text>
+                <AdjustmentConfidenceBadge
+                  confidence={shownConfidence}
+                  solverOnly={interpolated === undefined && (confident?.solverOnly ?? false)}
+                  testID="adjustment-confidence"
+                />
+              </View>
+            )}
+
+          <RelevantDopeList
+            matches={relevantDope}
+            emptyMessage={
+              // Set only when the interpolated offset is what the headline applied.
+              interpolated !== undefined
+                ? 'No log is close enough to this shot to compare one by one. The adjustment ' +
+                  'above was read across the distances you have logged.'
+                : undefined
+            }
+            testID="relevant-dope"
+          />
         </Card>
 
         {/* Detailed Results */}
@@ -346,6 +560,31 @@ export const BallisticSolutionResults: React.FC<Props> = ({ route, navigation })
             style={styles.button}
             disabled={isSaving}
           />
+          {/* Only when a headline figure differs from the stored one. With the
+              adjustment off or unapplied the headline already *is* what gets
+              stored, and a note drawing a distinction would be describing one
+              that is not there (#185). Covers windage as well as elevation:
+              #163 made the windage headline adjustable too, and a figure shown
+              as adjusted while a different one is saved is the exact condition
+              #185 was filed over. */}
+          {(adjustmentApplies || windageApplies) && (
+            <Text
+              style={[styles.saveNote, { color: colors.text.secondary }]}
+              testID="save-records-note"
+            >
+              {[
+                adjustmentApplies
+                  ? `Saves the solver's ${elevation.toFixed(2)} ${angularUnit} elevation, not the adjusted ${shownElevation.toFixed(2)}.`
+                  : undefined,
+                windageApplies
+                  ? `Saves the solver's ${windage.toFixed(2)} ${angularUnit} windage, not the adjusted ${(shownWindage ?? windage).toFixed(2)}.`
+                  : undefined,
+                'Your logs are measured against the solver, so storing an adjusted figure would fold the offset in twice.',
+              ]
+                .filter((part) => part !== undefined)
+                .join(' ')}
+            </Text>
+          )}
           <Button
             title={isExporting ? 'Exporting...' : 'Export PDF'}
             onPress={handleExportPDF}
@@ -399,8 +638,36 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'rgba(74, 144, 226, 0.3)',
   },
+  confidenceBlock: {
+    gap: 6,
+    marginTop: 12,
+  },
+  adjustRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    marginBottom: 8,
+  },
+  adjustLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    flexShrink: 1,
+    paddingRight: 12,
+  },
   matchesCaption: {
     fontSize: 12,
+    marginBottom: 8,
+  },
+  windageBlock: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  extrapolatedWarning: {
+    fontSize: 13,
+    fontWeight: '600',
     marginBottom: 8,
   },
   sectionTitle: {
@@ -470,6 +737,13 @@ const styles = StyleSheet.create({
   buttonContainer: {
     gap: 12,
     marginTop: 8,
+  },
+  saveNote: {
+    fontSize: 13,
+    lineHeight: 18,
+    // Pulls back part of buttonContainer's 12pt gap, so the note reads as part
+    // of the save button above it rather than as a label for Export PDF below.
+    marginTop: -4,
   },
   button: {
     flex: 1,

@@ -6,7 +6,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 
+import { setCustomCalibers, type CustomCaliber } from '../constants/calibers';
+import { DEFAULT_CONFIDENCE_THRESHOLD } from '../utils/adjustmentConfidence';
+import { isValidBarometerOffset } from '../utils/barometer';
+import { DEFAULT_DISTANCE_PRESETS, upgradeDistancePresets } from '../utils/distancePresets';
+import { DEFAULT_DISTANCE_DELTA } from '../utils/dopeMatching';
+import { isValidConfidenceThreshold, isValidDistanceDelta } from '../utils/dopeSettings';
+
 import type { ThemeMode } from '../constants/colors';
+import type { BackupSchedule } from '../utils/backupSchedule';
 
 interface AppSettings {
   defaultDistanceUnit: 'yards' | 'meters';
@@ -23,6 +31,70 @@ interface AppSettings {
    * safe direction; the calculator shows the terms either way.
    */
   advancedBallisticsEnabled: boolean;
+  /**
+   * Calibers the shooter added alongside the built-in list (#67). Kept with the
+   * settings rather than in SQLite: it is a short list of preferences with no
+   * relations of its own, and storing it here needs no migration. Profiles
+   * refer to a caliber by its name, as they do to the built-in ones.
+   */
+  customCalibers: CustomCaliber[];
+  /**
+   * How often an automatic backup is written to the device (#66). `manual`, the
+   * default, writes none -- which is how the app behaved before scheduling
+   * existed, so an upgrade does not start creating files nobody asked for.
+   */
+  backupSchedule: BackupSchedule;
+  /** ISO time of the last automatic backup, if one has run. */
+  lastAutomaticBackupAt?: string;
+  /**
+   * Calibration for the device barometer, in inHg, added to every reading the
+   * Environment screen takes from it (#62).
+   *
+   * Applied to the sensor reading only, never to a pressure typed by hand: it
+   * describes this handset's sensor. Zero -- uncalibrated -- by default. See
+   * `src/utils/barometer.ts` for why it is inHg and when it is added.
+   */
+  barometerOffsetInHg: number;
+  /**
+   * Whether the calculator adjusts its elevation by the shooter's own DOPE
+   * (#167). This is the *default* for the screen's switch, not the switch -- a
+   * shooter who turned it off for one shot should not find it off tomorrow.
+   *
+   * On by default, which is how #168 shipped: a shooter with no logs sees the
+   * solver either way, and one with logs is better served by them.
+   */
+  dopeAdjustmentEnabled: boolean;
+  /**
+   * The distance window the matcher searches, in yards (#70 §10). 25-100,
+   * default 50 -- `DEFAULT_DISTANCE_DELTA`, which is where the figure comes
+   * from rather than being restated here.
+   *
+   * Wider finds more logs and trusts each one less, because distance similarity
+   * falls off inside the window as well as outside it.
+   */
+  dopeDistanceDeltaYards: number;
+  /**
+   * Confidence below which the solver's figure stands alone, as a fraction
+   * (#161). Default 0.4, which is `DEFAULT_CONFIDENCE_THRESHOLD`.
+   */
+  dopeConfidenceThreshold: number;
+  /**
+   * Whether the session screen measures and offers a cold-bore bias (#165,
+   * #167). On by default: the correction itself is still off until the shooter
+   * turns it on for a shot, so this only decides whether the figure is shown.
+   */
+  coldBoreModellingEnabled: boolean;
+  /** The same for the heat shift. */
+  heatShiftModellingEnabled: boolean;
+  /**
+   * Whether the app asks for the device's own authentication at launch and on
+   * return to the foreground (#67, ADR-015). Off by default: it is opt-in.
+   *
+   * Nothing reads this yet and Settings does not offer it. The gate is the next
+   * slice of #67, and the switch ships with it -- a switch that locked nothing
+   * would be a control the app does not have (#44).
+   */
+  appLockEnabled: boolean;
   lastSelectedRifleId?: number;
   lastSelectedAmmoId?: number;
   distancePresets: number[];
@@ -53,8 +125,6 @@ interface AppState {
   clearError: () => void;
 }
 
-const DEFAULT_DISTANCE_PRESETS = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
-
 const defaultSettings: AppSettings = {
   defaultDistanceUnit: 'yards',
   defaultCorrectionUnit: 'MIL',
@@ -62,12 +132,40 @@ const defaultSettings: AppSettings = {
   hapticFeedbackEnabled: true,
   keepScreenAwakeDuringSession: true,
   advancedBallisticsEnabled: false,
+  customCalibers: [],
+  backupSchedule: 'manual',
+  barometerOffsetInHg: 0,
+  // Taken from the modules that consume them, so there is one definition of each
+  // default and the settings screen's "reset" cannot drift from the code's own.
+  dopeAdjustmentEnabled: true,
+  dopeDistanceDeltaYards: DEFAULT_DISTANCE_DELTA,
+  dopeConfidenceThreshold: DEFAULT_CONFIDENCE_THRESHOLD,
+  coldBoreModellingEnabled: true,
+  heatShiftModellingEnabled: true,
+  appLockEnabled: false,
   distancePresets: DEFAULT_DISTANCE_PRESETS,
 };
 
 export { DEFAULT_DISTANCE_PRESETS };
 
+/**
+ * The shipped settings, for a screen that offers to put one section back.
+ *
+ * Exported so "reset to defaults" (#167) reads the same figures the app starts
+ * with, rather than restating them -- which is how a reset comes to set a value
+ * the code no longer uses.
+ */
+export const DEFAULT_SETTINGS: Readonly<AppSettings> = defaultSettings;
+
 const SETTINGS_STORAGE_KEY = '@mobileDOPE:settings';
+
+/** Switches whose stored value is replaced by the default unless it is a boolean. */
+const VALIDATED_SWITCHES = [
+  'dopeAdjustmentEnabled',
+  'coldBoreModellingEnabled',
+  'heatShiftModellingEnabled',
+  'appLockEnabled',
+] as const satisfies readonly (keyof AppSettings)[];
 
 /**
  * Save settings to AsyncStorage
@@ -88,7 +186,30 @@ async function loadSettingsFromStorage(): Promise<AppSettings> {
   try {
     const stored = await AsyncStorage.getItem(SETTINGS_STORAGE_KEY);
     if (stored) {
-      return { ...defaultSettings, ...(JSON.parse(stored) as Partial<AppSettings>) };
+      const merged = { ...defaultSettings, ...(JSON.parse(stored) as Partial<AppSettings>) };
+      // The offset is added to every barometer reading without the user seeing it
+      // again, so a corrupted or out-of-range stored value is dropped, not trusted.
+      if (
+        typeof merged.barometerOffsetInHg !== 'number' ||
+        !isValidBarometerOffset(merged.barometerOffsetInHg)
+      ) {
+        merged.barometerOffsetInHg = defaultSettings.barometerOffsetInHg;
+      }
+      // Same reasoning as the offset above, and the stakes are the same shape:
+      // a delta of 0 or a threshold above 1 switches DOPE-assisted aiming off
+      // without reporting anything, leaving a correct-looking solver figure and
+      // no explanation. See `src/utils/dopeSettings.ts`.
+      if (!isValidDistanceDelta(merged.dopeDistanceDeltaYards)) {
+        merged.dopeDistanceDeltaYards = defaultSettings.dopeDistanceDeltaYards;
+      }
+      if (!isValidConfidenceThreshold(merged.dopeConfidenceThreshold)) {
+        merged.dopeConfidenceThreshold = defaultSettings.dopeConfidenceThreshold;
+      }
+      merged.distancePresets = upgradeDistancePresets(merged.distancePresets);
+      for (const key of VALIDATED_SWITCHES) {
+        if (typeof merged[key] !== 'boolean') merged[key] = defaultSettings[key];
+      }
+      return merged;
     }
     return defaultSettings;
   } catch (error) {
@@ -115,14 +236,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateSettings: async (newSettings) => {
     const updatedSettings = { ...get().settings, ...newSettings };
     set({ settings: updatedSettings });
+    // The solver reads custom diameters from the caliber database, not from here.
+    if (newSettings.customCalibers) setCustomCalibers(newSettings.customCalibers);
     await saveSettingsToStorage(updatedSettings);
   },
   loadSettings: async () => {
     const settings = await loadSettingsFromStorage();
     set({ settings });
+    setCustomCalibers(settings.customCalibers);
   },
   resetSettings: async () => {
     set({ settings: defaultSettings });
+    setCustomCalibers(defaultSettings.customCalibers);
     await clearSettingsFromStorage();
   },
 

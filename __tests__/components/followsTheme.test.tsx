@@ -8,12 +8,14 @@ import { StyleSheet, Text } from 'react-native';
 import { Button } from '../../src/components/Button';
 import { EmptyState } from '../../src/components/EmptyState';
 import { ErrorBoundary } from '../../src/components/ErrorBoundary';
+import { GroupStatistics } from '../../src/components/GroupStatistics';
 import { IconButton } from '../../src/components/IconButton';
 import { ListItem } from '../../src/components/ListItem';
 import { LoadingSpinner } from '../../src/components/LoadingSpinner';
 import { Modal } from '../../src/components/Modal';
 import { Picker } from '../../src/components/Picker';
 import { SegmentedControl } from '../../src/components/SegmentedControl';
+import { TargetView } from '../../src/components/TargetView';
 import { UnitToggle } from '../../src/components/UnitToggle';
 import { Colors, ThemeMode } from '../../src/constants/colors';
 import { useAppStore } from '../../src/store/useAppStore';
@@ -106,6 +108,27 @@ describe.each(['light', 'nightVision', 'dark'] as ThemeMode[])('%s theme', (mode
     );
     expect(getByTestId('sp').props.color).toBe(c.primary);
     expect(colorOf(getByText('Loading')).color).toBe(c.text.secondary);
+  });
+
+  it('TargetView: surface and the numbered shot drawn on it (#63)', () => {
+    const { getByTestId, getByText } = renderWithProviders(
+      <TargetView
+        background={{ kind: 'bullseye' }}
+        markers={[{ x: 0.5, y: 0.5, shotNumber: 1 }]}
+        testID="tv"
+      />
+    );
+    fireEvent(getByTestId('tv'), 'layout', {
+      nativeEvent: { layout: { x: 0, y: 0, width: 200, height: 200 } },
+    });
+    expect(colorOf(getByTestId('tv')).backgroundColor).toBe(c.surface);
+    expect(colorOf(getByText('1')).color).toBe(c.onSecondary);
+  });
+
+  it('GroupStatistics: labels and figures (#63)', () => {
+    const { getByText } = renderWithProviders(<GroupStatistics group={{ shotCount: 0 }} />);
+    expect(colorOf(getByText('Shots')).color).toBe(c.text.secondary);
+    expect(colorOf(getByText('0')).color).toBe(c.text.primary);
   });
 
   it('EmptyState: title and message', () => {
@@ -223,6 +246,49 @@ describe('no component reads the static theme', () => {
       .filter((f) => STATIC.test(fs.readFileSync(f, 'utf8')))
       .map((f) => path.relative(ROOT, f))
       .filter((f) => f !== ALLOWED);
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('every Switch follows the theme', () => {
+  it('each <Switch> in src sets trackColor and thumbColor', () => {
+    // Without them iOS draws its own system green (#30D158) rather than the
+    // app's primary (#4CAF50), so one control on the screen is a different
+    // colour from every other (#186). Scanned rather than rendered: the defect
+    // is "someone added a Switch and forgot", and a per-screen render test only
+    // covers the screens someone remembered to write one for.
+    const ROOT = path.join(__dirname, '../..');
+    const files = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) return files(p);
+        return /\.tsx$/.test(e.name) ? [p] : [];
+      });
+
+    const offenders = files(path.join(ROOT, 'src')).flatMap((file) => {
+      const source = fs.readFileSync(file, 'utf8');
+      const at = (index: number) =>
+        `${path.relative(ROOT, file)}:${source.slice(0, index).split('\n').length}`;
+
+      // `[^<]` holds the match inside one element. Allowing anything would let a
+      // Switch this pattern cannot read run on to the next element's `/>` and
+      // borrow its colours, which is a guard that passes by not looking.
+      const elements = new Map(
+        [...source.matchAll(/<Switch\b[^<]*?\/>/g)].map((m) => [m.index as number, m[0]])
+      );
+
+      return [...source.matchAll(/<Switch\b/g)].flatMap((m) => {
+        const element = elements.get(m.index as number);
+        // Every Switch in this app is self-closing, so an unreadable one means
+        // the pattern has stopped covering the code. Fail rather than skip it.
+        if (element === undefined)
+          return [`${at(m.index as number)} (not readable as one element)`];
+        return element.includes('trackColor') && element.includes('thumbColor')
+          ? []
+          : [at(m.index as number)];
+      });
+    });
 
     expect(offenders).toEqual([]);
   });

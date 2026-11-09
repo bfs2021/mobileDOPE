@@ -4,17 +4,32 @@
  */
 
 import * as Location from 'expo-location';
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  AccessibilityInfo,
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Alert,
+  TouchableOpacity,
+} from 'react-native';
 
 import { Button } from '../components/Button';
 import { NumberInput } from '../components/NumberInput';
 import { Picker } from '../components/Picker';
+import { SegmentedControl } from '../components/SegmentedControl';
 import { STATION_PRESSURE_HELP } from '../constants/fieldHelp';
 import { useTheme } from '../contexts/ThemeContext';
 import { EnvironmentSnapshotData } from '../models/EnvironmentSnapshot';
+import { isBarometerAvailable, readBarometerHpa } from '../services/deviceBarometer';
+import { useAppStore } from '../store/useAppStore';
 import { useEnvironmentStore } from '../store/useEnvironmentStore';
+import { LightCondition } from '../types/database.types';
+import { stationPressureFromSensor } from '../utils/barometer';
 import { coarsenLatitude } from '../utils/geoPrecision';
+
+import type { SessionStackScreenProps } from '../navigation/types';
 
 // Wind direction options in degrees
 const WIND_DIRECTION_OPTIONS = [
@@ -26,6 +41,14 @@ const WIND_DIRECTION_OPTIONS = [
   { label: '225°', value: '225' },
   { label: '270° (Left)', value: '270' },
   { label: '315°', value: '315' },
+];
+
+// The light a reading was taken in (#62). A closed set rather than a slider:
+// there is no meaningful point between these to slide to.
+const LIGHT_CONDITION_OPTIONS: { label: string; value: LightCondition }[] = [
+  { label: 'Day', value: 'day' },
+  { label: 'Low Light', value: 'low_light' },
+  { label: 'Night', value: 'night' },
 ];
 
 // Environmental presets for common conditions
@@ -60,10 +83,39 @@ const PRESETS = {
   },
 };
 
-export function EnvironmentInput() {
+type Props = Partial<SessionStackScreenProps<'EnvironmentInput'>>;
+
+export function EnvironmentInput({ route, navigation }: Props = {}) {
   const { theme } = useTheme();
   const { colors } = theme;
-  const { current, setCurrent, saveCurrent, loading } = useEnvironmentStore();
+  const { current, setCurrent, saveCurrent, updateSnapshot, snapshots, loadSnapshots, loading } =
+    useEnvironmentStore();
+  const barometerOffset = useAppStore((state) => state.settings.barometerOffsetInHg);
+
+  /**
+   * The saved snapshot being edited, if any (#62).
+   *
+   * The screen captures conditions and the screen that edits them is the same
+   * one, because every field, every sensor read and every validation rule is
+   * already here -- a second form would be a second place for the station-
+   * pressure help text and the latitude-coarsening rule to be got wrong.
+   */
+  const editingId = route?.params?.snapshotId;
+  const editing = editingId !== undefined;
+
+  /**
+   * Whether the list has been loaded for an edit that found the store empty.
+   *
+   * A ref guards the request because `loadSnapshots` always sets a new array:
+   * with nothing saved, every load would re-run the effect below and load again.
+   * The state is what lets the screen say the reading is gone once it has looked.
+   */
+  const editLoadRequested = useRef(false);
+  const [editLoadFinished, setEditLoadFinished] = useState(false);
+  const editingMissing =
+    editing &&
+    !snapshots.some((candidate) => candidate.id === editingId) &&
+    (snapshots.length > 0 || editLoadFinished);
 
   // Environmental parameters
   const [temperature, setTemperature] = useState<number | undefined>(current?.temperature || 59);
@@ -75,10 +127,19 @@ export function EnvironmentInput() {
     current?.windDirection || 0
   );
   const [latitude, setLatitude] = useState<number | undefined>(current?.latitude);
+  // Starts unselected for a new reading: preselecting "Day" would record
+  // daylight for every reading the shooter did not stop to describe.
+  const [lightCondition, setLightCondition] = useState<LightCondition | undefined>(
+    current?.lightCondition
+  );
 
   // Sensor availability
   const [locationEnabled, setLocationEnabled] = useState(false);
   const [locationPermission, setLocationPermission] = useState(false);
+  // Only offered where the device has one (#62). Most phones do; many tablets
+  // and some budget Android handsets do not.
+  const [barometerAvailable, setBarometerAvailable] = useState(false);
+  const [readingBarometer, setReadingBarometer] = useState(false);
 
   // Density altitude (calculated)
   const [densityAltitude, setDensityAltitude] = useState<number>(0);
@@ -186,6 +247,49 @@ export function EnvironmentInput() {
   };
 
   /**
+   * Fill station pressure from the device barometer (#62).
+   *
+   * The phone reports the absolute pressure at the handset -- station pressure,
+   * which is what this field asks for -- so the reading is converted from hPa
+   * and offset by the user's calibration, and never corrected to sea level. See
+   * `src/utils/barometer.ts`. One short read: the sensor is released as soon as
+   * it has a few samples, or after a timeout.
+   */
+  const readBarometer = async () => {
+    setReadingBarometer(true);
+    try {
+      const samples = await readBarometerHpa();
+      const station = stationPressureFromSensor(samples, barometerOffset);
+      if (station === null) {
+        Alert.alert(
+          'No Barometer Reading',
+          samples.length === 0
+            ? 'The barometer did not respond. On iPhone, check that Mobile DOPE is ' +
+                'allowed under Settings › Privacy & Security › Motion & Fitness. You can ' +
+                'enter station pressure by hand.'
+            : 'The barometer gave a reading outside the range a station pressure can be, ' +
+                'so it was not used. Check the calibration offset in Settings, or enter ' +
+                'station pressure by hand.'
+        );
+        return;
+      }
+      setPressure(station);
+      // The field changes without focus moving to it, so a screen-reader user
+      // would otherwise hear nothing after tapping Read Barometer.
+      AccessibilityInfo.announceForAccessibility(
+        `Station pressure set to ${station.toFixed(2)} inHg`
+      );
+    } catch (_error) {
+      Alert.alert(
+        'No Barometer Reading',
+        'The barometer could not be read. You can enter station pressure by hand.'
+      );
+    } finally {
+      setReadingBarometer(false);
+    }
+  };
+
+  /**
    * Calculate density altitude
    * Formula: DA = PA + (120 * (OAT - ISA))
    */
@@ -207,6 +311,51 @@ export function EnvironmentInput() {
   useEffect(() => {
     checkSensorPermissions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * Fills the form from the snapshot being edited (#62).
+   *
+   * Reads it out of the store rather than the database: the history screen that
+   * navigates here has already loaded the list, and a second read would let the
+   * form show one set of figures while the list behind it showed another.
+   * Loads the list when it is empty, for a deep link or a reload.
+   */
+  useEffect(() => {
+    if (editingId === undefined) return;
+
+    const snapshot = snapshots.find((candidate) => candidate.id === editingId);
+    if (snapshot === undefined) {
+      if (snapshots.length === 0 && !editLoadRequested.current) {
+        editLoadRequested.current = true;
+        loadSnapshots()
+          .catch((error) => {
+            console.error('Failed to load snapshots for editing:', error);
+          })
+          .finally(() => setEditLoadFinished(true));
+      }
+      return;
+    }
+
+    setTemperature(snapshot.temperature);
+    setHumidity(snapshot.humidity);
+    setPressure(snapshot.pressure);
+    setAltitude(snapshot.altitude);
+    setWindSpeed(snapshot.windSpeed);
+    setWindDirection(snapshot.windDirection);
+    setLatitude(snapshot.latitude);
+    setLightCondition(snapshot.lightCondition);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId, snapshots]);
+
+  useEffect(() => {
+    let mounted = true;
+    void isBarometerAvailable().then((available) => {
+      if (mounted) setBarometerAvailable(available);
+    });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -250,7 +399,19 @@ export function EnvironmentInput() {
         windSpeed,
         windDirection,
         latitude,
+        lightCondition,
       };
+
+      if (editing) {
+        // Deliberately does NOT touch the timestamp. It records when the
+        // conditions were measured, and #192 made the DOPE ranking depend on
+        // that: re-stamping an edited snapshot would make air measured weeks
+        // ago look minutes old, which is the defect #192 fixed in session start.
+        await updateSnapshot(editingId, data);
+        Alert.alert('Saved', 'These conditions have been updated.');
+        navigation?.goBack();
+        return;
+      }
 
       setCurrent(data);
       await saveCurrent();
@@ -284,6 +445,7 @@ export function EnvironmentInput() {
       windSpeed,
       windDirection,
       latitude,
+      lightCondition,
     };
 
     setCurrent(data);
@@ -355,6 +517,21 @@ export function EnvironmentInput() {
             required
           />
 
+          {barometerAvailable && (
+            <View style={styles.sensorButtonContainer}>
+              <Button
+                title="Read Barometer"
+                // Button swaps its title for a spinner while loading; the label
+                // keeps the control named during the read.
+                accessibilityLabel="Read Barometer"
+                onPress={readBarometer}
+                variant="secondary"
+                loading={readingBarometer}
+                accessibilityHint="Fills station pressure from this device's barometer"
+              />
+            </View>
+          )}
+
           <NumberInput
             label="Altitude"
             value={altitude}
@@ -411,6 +588,29 @@ export function EnvironmentInput() {
           />
         </View>
 
+        {/* Light (Optional) */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
+            Light (Optional)
+          </Text>
+          <SegmentedControl
+            options={LIGHT_CONDITION_OPTIONS}
+            // '' matches no option, so nothing shows as chosen until one is.
+            selectedValue={lightCondition ?? ''}
+            onValueChange={(value) => setLightCondition(value as LightCondition)}
+          />
+          {/* A segment cannot be unselected, so a mis-tap needs a way back to "not recorded". */}
+          {lightCondition !== undefined && (
+            <View style={styles.clearLightContainer}>
+              <Button
+                title="Clear Light"
+                onPress={() => setLightCondition(undefined)}
+                variant="secondary"
+              />
+            </View>
+          )}
+        </View>
+
         {/* GPS Coordinates (Optional) */}
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
@@ -435,13 +635,36 @@ export function EnvironmentInput() {
 
         {/* Action Buttons */}
         <View style={styles.buttonContainer}>
-          <Button
-            title="Update Current"
-            onPress={handleUpdateCurrent}
-            variant="secondary"
-            loading={loading}
-          />
-          <Button title="Save to History" onPress={handleSave} loading={loading} />
+          {editingMissing ? (
+            <Text style={[styles.sectionNote, { color: colors.text.secondary }]}>
+              This saved reading could not be found. It may have been deleted.
+            </Text>
+          ) : editing ? (
+            <>
+              <Text style={[styles.sectionNote, { color: colors.text.secondary }]}>
+                Editing a saved reading. Its recorded time does not change, because that is when the
+                conditions were measured.
+              </Text>
+              <Button title="Save Changes" onPress={handleSave} loading={loading} />
+            </>
+          ) : (
+            <>
+              <Button
+                title="Update Current"
+                onPress={handleUpdateCurrent}
+                variant="secondary"
+                loading={loading}
+              />
+              <Button title="Save to History" onPress={handleSave} loading={loading} />
+              {navigation !== undefined && (
+                <Button
+                  title="Saved Conditions"
+                  onPress={() => navigation.navigate('EnvironmentHistory')}
+                  variant="secondary"
+                />
+              )}
+            </>
+          )}
         </View>
       </ScrollView>
     </View>
@@ -486,6 +709,12 @@ const styles = StyleSheet.create({
   presetText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  sensorButtonContainer: {
+    marginBottom: 16,
+  },
+  clearLightContainer: {
+    marginTop: 8,
   },
   gpsButtonContainer: {
     marginTop: 8,

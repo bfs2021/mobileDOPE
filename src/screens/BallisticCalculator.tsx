@@ -9,6 +9,7 @@ import { useAppStore } from '../store/useAppStore';
 import { useRifleStore } from '../store/useRifleStore';
 import { calculateBallisticSolution } from '../utils/ballistics';
 import {
+  gustSpeedError,
   hasRequiredEnvironmentalInputs,
   missingEnvironmentalInputs,
 } from '../utils/calculatorInputs';
@@ -52,6 +53,8 @@ export const BallisticCalculator: React.FC<Props> = ({ navigation }) => {
   const [altitude, setAltitude] = useState<number | undefined>(0);
   const [windSpeed, setWindSpeed] = useState<number | undefined>(0);
   const [windDirection, setWindDirection] = useState<number | undefined>(90); // 90° = 3 o'clock
+  // Optional (#220). With a gust, `windSpeed` is the lull.
+  const [gustSpeed, setGustSpeed] = useState<number | undefined>();
 
   // Unit preferences
   const [angularUnit, setAngularUnit] = useState<'MIL' | 'MOA'>('MIL');
@@ -86,6 +89,12 @@ export const BallisticCalculator: React.FC<Props> = ({ navigation }) => {
         'Missing Data',
         `Please fill in: ${missingEnvironmentalInputs(environmentals).join(', ')}.`
       );
+      return;
+    }
+
+    const gustError = gustSpeedError(environmentals.windSpeed, gustSpeed);
+    if (gustError) {
+      Alert.alert('Check Gust Speed', gustError);
       return;
     }
 
@@ -126,13 +135,18 @@ export const BallisticCalculator: React.FC<Props> = ({ navigation }) => {
         altitude: altitude ?? 0,
       };
 
-      const result = calculateBallisticSolution(
-        rifleConfig,
-        ammoConfig,
-        targetParams,
-        atmosphere,
-        false
-      );
+      const solve = (wind: number) =>
+        calculateBallisticSolution(
+          rifleConfig,
+          ammoConfig,
+          { ...targetParams, windSpeed: wind },
+          atmosphere,
+          false
+        );
+      const result = solve(environmentals.windSpeed);
+      // The same shot in the gust (#220): only the wind speed changes, so the
+      // two solutions differ in windage alone and bracket the hold.
+      const gustSolution = gustSpeed === undefined ? undefined : solve(gustSpeed);
 
       // Navigate to results screen
       navigation.navigate('BallisticSolutionResults', {
@@ -144,6 +158,12 @@ export const BallisticCalculator: React.FC<Props> = ({ navigation }) => {
         distance,
         distanceUnit,
         angularUnit,
+        // The wind it was solved in, so the results screen scales the windage
+        // offset by this rather than the environment store's wind (#163).
+        windSpeed: environmentals.windSpeed,
+        windDirection: environmentals.windDirection,
+        gustSpeed,
+        gustSolution,
       });
     } catch (error: unknown) {
       Alert.alert(
@@ -280,6 +300,16 @@ export const BallisticCalculator: React.FC<Props> = ({ navigation }) => {
             max={50}
             precision={0}
             unit="mph"
+          />
+          <NumberInput
+            label="Gust Speed"
+            value={gustSpeed}
+            onChangeValue={setGustSpeed}
+            min={0}
+            max={50}
+            precision={0}
+            unit="mph"
+            helperText="Optional. With a gust, Wind Speed is the lull."
           />
           <Picker
             label="Wind Direction"

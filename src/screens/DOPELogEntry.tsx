@@ -16,10 +16,14 @@ import { SegmentedControl } from '../components/SegmentedControl';
 import { TextInput } from '../components/TextInput';
 import { useTheme } from '../contexts/ThemeContext';
 import { useDopeLog } from '../hooks/useDopeLog';
+import { dopeLogRepository } from '../services/database';
 import { useAmmoStore } from '../store/useAmmoStore';
+import { useAppStore } from '../store/useAppStore';
 import { useDOPEStore } from '../store/useDOPEStore';
 import { useEnvironmentStore } from '../store/useEnvironmentStore';
 import { useRifleStore } from '../store/useRifleStore';
+import { describeColdBoreSuggestion, suggestColdBore } from '../utils/coldBore';
+import { conditionsToMatch, describeSnapshotAge } from '../utils/matchConditions';
 
 import type { DOPELogData, DOPELog } from '../models/DOPELog';
 import type { LogsStackScreenProps } from '../navigation/types';
@@ -71,7 +75,7 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
 
   const { rifles, loadRifles } = useRifleStore();
   const { ammoProfiles, loadAmmoProfiles } = useAmmoStore();
-  const { current: currentEnv, saveCurrent } = useEnvironmentStore();
+  const { current: currentEnv, saveCurrent, snapshots, loadSnapshots } = useEnvironmentStore();
   const { createDopeLog, updateDopeLog, loading } = useDOPEStore();
 
   // Load the profiles this screen needs rather than rely on another screen
@@ -110,9 +114,18 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
   const [windageCorrection, setWindageCorrection] = useState<number | undefined>(
     existingLog?.windageCorrection || 0
   );
-  const [correctionUnit, setCorrectionUnit] = useState<'MIL' | 'MOA'>(
-    existingLog?.correctionUnit || 'MIL'
-  );
+  // The shooter's choice, if they made one; otherwise the log's own unit, the
+  // selected rifle's turret unit, or the Settings default. Derived like the
+  // rifle above, so a rifle that loads after the first render -- or a change
+  // of rifle -- still sets it. A fixed 'MIL' start let a shooter save numbers
+  // dialled on a MOA turret labelled MIL (#230).
+  const defaultCorrectionUnit = useAppStore((state) => state.settings.defaultCorrectionUnit);
+  const [chosenCorrectionUnit, setCorrectionUnit] = useState<'MIL' | 'MOA' | undefined>();
+  const correctionUnit: 'MIL' | 'MOA' =
+    chosenCorrectionUnit ??
+    existingLog?.correctionUnit ??
+    rifles.find((r) => r.id === selectedRifleId)?.clickValueType ??
+    defaultCorrectionUnit;
 
   // Target info
   const [targetType, setTargetType] = useState<'steel' | 'paper' | 'vital_zone' | 'other'>(
@@ -121,12 +134,51 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
   const [groupSize, setGroupSize] = useState<number | undefined>(existingLog?.groupSize);
   const [hitCount, setHitCount] = useState<number | undefined>(existingLog?.hitCount);
   const [shotCount, setShotCount] = useState<number | undefined>(existingLog?.shotCount);
+  // Barrel state (#164). Three-valued on purpose: "Not recorded" is a real
+  // answer, and the one every log written before this feature carries. Stored
+  // as a string because SegmentedControl's values are strings.
+  const [coldBoreChoice, setColdBoreChoice] = useState<'unknown' | 'cold' | 'warm'>(
+    existingLog?.coldBoreShot === undefined ? 'unknown' : existingLog.coldBoreShot ? 'cold' : 'warm'
+  );
+  // Whether the current choice came from the gap rule rather than from a tap,
+  // so the screen can say so instead of presenting a guess as the shooter's.
+  /**
+   * The hint under the barrel-state control, set when the rule decides.
+   *
+   * Held as the sentence rather than as a flag, because the sentence depends on
+   * the gap the effect read from the database and nothing else on this screen
+   * knows it. An empty string means the rule has not spoken.
+   */
+  const [coldBoreSuggested, setColdBoreSuggested] = useState('');
+  // Set by the first tap on the control, and never cleared. Without it,
+  // choosing "Not recorded" deliberately looked identical to the untouched
+  // default and the suggestion immediately overwrote it.
+  const [coldBoreTouched, setColdBoreTouched] = useState(false);
   const [notes, setNotes] = useState(existingLog?.notes || '');
 
   // Environment ID will be set when saving
   const [environmentId, setEnvironmentId] = useState<number | undefined>(
     existingLog?.environmentId
   );
+
+  // The conditions a new log is recorded against (#231). `current` is null on
+  // a cold launch until the Environmental Data screen is opened, so the latest
+  // snapshot stands in for it -- by the same under-a-day rule the DOPE ranking
+  // and Start Session apply (#190, #192), so the three cannot disagree about
+  // whether today's air is known. The snapshot is linked as it is, not copied
+  // under a fresh timestamp, which would make old air look newly measured.
+  useEffect(() => {
+    loadSnapshots(1).catch(() => {
+      // Without snapshots the form asks for conditions, as it did before.
+    });
+  }, [loadSnapshots]);
+  const conditions = conditionsToMatch(currentEnv, snapshots);
+  const latestSnapshot = snapshots[0];
+  // An edited log keeps the conditions it was shot in, so another snapshot is
+  // not offered as its air.
+  const recentSnapshot =
+    !existingLog && conditions.source === 'latest-snapshot' ? latestSnapshot : undefined;
+  const logEnv = conditions.source === 'current' ? currentEnv : recentSnapshot;
 
   // Auto-select compatible ammo when rifle changes
   const handleRifleChange = (newRifleId: number | undefined) => {
@@ -141,6 +193,42 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
       }
     }
   };
+
+  /**
+   * Suggest cold bore from the gap since this rifle last fired (#164).
+   *
+   * Reads the gap from the database rather than the DOPE store: only DOPE Logs
+   * fills that store, so a shooter who opens New DOPE Log directly would be
+   * judged against an empty list and told "cold bore" however recently they
+   * fired.
+   *
+   * Runs only on a new log, and only until the shooter touches the control.
+   * An edited log already carries whatever was recorded at the time, and a
+   * deliberate answer -- "Not recorded" included -- must not be argued with.
+   * `coldBoreSuggested` marks the value as the rule's rather than theirs,
+   * which is what the hint below the control reports: #164 asks that cold bore
+   * is never silently assumed.
+   */
+  useEffect(() => {
+    if (existingLog || coldBoreTouched || selectedRifleId === undefined) return;
+
+    let current = true;
+    dopeLogRepository
+      .getLastFiredAt(selectedRifleId)
+      .then((lastFiredAt) => {
+        if (!current) return;
+        setColdBoreChoice(suggestColdBore(lastFiredAt) ? 'cold' : 'warm');
+        setColdBoreSuggested(describeColdBoreSuggestion(lastFiredAt));
+      })
+      .catch(() => {
+        // The suggestion is a convenience. If the read fails the control stays
+        // where it is -- unanswered by default, which is a valid recording.
+      });
+
+    return () => {
+      current = false;
+    };
+  }, [existingLog, coldBoreTouched, selectedRifleId]);
 
   const selectedRifle = rifles.find((r) => r.id === selectedRifleId);
   const filteredAmmo = selectedRifle
@@ -180,7 +268,7 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
 
     try {
       // Save or update current environment if exists
-      let envId = environmentId;
+      let envId = environmentId ?? recentSnapshot?.id;
       if (currentEnv && !environmentId) {
         const savedEnv = await saveCurrent();
         envId = savedEnv.id;
@@ -208,6 +296,10 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
         groupSize,
         hitCount,
         shotCount,
+        coldBoreShot: coldBoreChoice === 'unknown' ? undefined : coldBoreChoice === 'cold',
+        // Set by range session mode, not here: a log typed on this screen has
+        // no string to be a position in. An edited log keeps whatever it had.
+        shotNumberInSession: existingLog?.shotNumberInSession,
         notes: notes.trim() || undefined,
       };
 
@@ -396,6 +488,28 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
               />
             </View>
           </View>
+
+          {/* Barrel state (#164). Three options, because "not recorded" is the
+              honest answer for a shot nobody watched the clock on. */}
+          <Text style={[styles.fieldLabel, { color: colors.text.primary }]}>Barrel state</Text>
+          <SegmentedControl
+            options={[
+              { label: 'Not recorded', value: 'unknown' },
+              { label: 'Cold bore', value: 'cold' },
+              { label: 'Warm bore', value: 'warm' },
+            ]}
+            selectedValue={coldBoreChoice}
+            onValueChange={(value) => {
+              setColdBoreChoice(value as 'unknown' | 'cold' | 'warm');
+              setColdBoreSuggested('');
+              setColdBoreTouched(true);
+            }}
+          />
+          <Text style={[styles.fieldHint, { color: colors.text.secondary }]}>
+            {coldBoreSuggested === ''
+              ? 'Cold bore shots print differently. Leave it unrecorded if you are not sure.'
+              : coldBoreSuggested}
+          </Text>
         </Card>
 
         {/* Notes */}
@@ -414,25 +528,30 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
         </Card>
 
         {/* Environmental Snapshot */}
-        {currentEnv && (
+        {logEnv && (
           <Card style={[styles.card, { backgroundColor: colors.surface }]}>
             <Text style={[styles.envTitle, { color: colors.text.secondary }]}>
-              Current Environment
+              {recentSnapshot
+                ? `Latest Conditions (${describeSnapshotAge(recentSnapshot.timestamp)})`
+                : 'Current Environment'}
             </Text>
             <Text style={[styles.envText, { color: colors.text.primary }]}>
-              {`${currentEnv.temperature}°F • ${currentEnv.pressure}" Hg • ${currentEnv.altitude}' MSL`}
+              {`${logEnv.temperature}°F • ${logEnv.pressure}" Hg • ${logEnv.altitude}' MSL`}
             </Text>
             <Text style={[styles.envText, { color: colors.text.primary }]}>
-              Wind: {currentEnv.windSpeed} mph @ {currentEnv.windDirection}°
+              Wind: {logEnv.windSpeed} mph @ {logEnv.windDirection}°
             </Text>
           </Card>
         )}
 
-        {!currentEnv && (
+        {!logEnv && !environmentId && (
           <Card style={[styles.card, { backgroundColor: colors.error + '20' }]}>
             <Text style={[styles.warningText, { color: colors.errorText }]}>
-              ⚠️ No environmental data captured. Go to Range → Environmental Conditions to record
-              conditions.
+              {latestSnapshot
+                ? `⚠️ The latest conditions are ${describeSnapshotAge(latestSnapshot.timestamp)}. ` +
+                  'Record current conditions on the Session tab: Current Conditions → Update.'
+                : '⚠️ No environmental data captured. Record conditions on the Session tab: ' +
+                  'Current Conditions → Add.'}
             </Text>
           </Card>
         )}
@@ -445,7 +564,7 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
             variant="primary"
             size="large"
             loading={loading}
-            disabled={!selectedRifleId || !selectedAmmoId || !currentEnv}
+            disabled={!selectedRifleId || !selectedAmmoId || (!logEnv && !environmentId)}
           />
         </View>
       </ScrollView>
@@ -478,6 +597,16 @@ const styles = StyleSheet.create({
   },
   shotCountField: {
     flex: 1,
+  },
+  fieldLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  fieldHint: {
+    fontSize: 13,
+    marginTop: 8,
   },
   envTitle: {
     fontSize: 14,

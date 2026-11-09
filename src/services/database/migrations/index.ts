@@ -9,6 +9,9 @@ import migration003 from './003_fix_empty_caliber';
 import migration004 from './004_remove_rifle_id_from_ammo';
 import migration005 from './005_drop_longitude_coarsen_latitude';
 import migration006 from './006_drop_longitude_column';
+import migration007 from './007_add_barrel_state_to_dope_logs';
+import migration008 from './008_add_target_scale';
+import migration009 from './009_add_light_condition';
 import migrationRunner from './MigrationRunner';
 
 // Register all migrations
@@ -18,6 +21,9 @@ migrationRunner.register(migration003);
 migrationRunner.register(migration004);
 migrationRunner.register(migration005);
 migrationRunner.register(migration006);
+migrationRunner.register(migration007);
+migrationRunner.register(migration008);
+migrationRunner.register(migration009);
 
 // Export for use in app initialization
 export { migrationRunner };

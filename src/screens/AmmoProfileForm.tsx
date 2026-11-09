@@ -3,9 +3,10 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import React, { useState } from 'react';
 import { View, ScrollView, StyleSheet, Alert } from 'react-native';
 
-import { TextInput, NumberInput, Button, Picker } from '../components';
-import { CALIBER_OPTIONS } from '../constants/calibers';
+import { TextInput, NumberInput, Button, Picker, FactoryLoadPicker } from '../components';
+import { FactoryLoad, factoryLoadNote } from '../constants/factoryLoads';
 import { useTheme } from '../contexts/ThemeContext';
+import { useCaliberOptions } from '../hooks/useCaliberOptions';
 import { AmmoProfileData } from '../models/AmmoProfile';
 import { ProfilesStackParamList } from '../navigation/types';
 import { useAmmoStore } from '../store/useAmmoStore';
@@ -20,6 +21,8 @@ export const AmmoProfileForm: React.FC = () => {
   const navigation = useNavigation<AmmoProfileFormNavigationProp>();
   const route = useRoute<AmmoProfileFormRouteProp>();
   const { theme } = useTheme();
+  // Built-in calibers and the shooter's own (#67).
+  const caliberOptions = useCaliberOptions();
   const { colors } = theme;
 
   const { ammoProfiles, createAmmoProfile, updateAmmoProfile } = useAmmoStore();
@@ -43,6 +46,25 @@ export const AmmoProfileForm: React.FC = () => {
   const [powderWeight, setPowderWeight] = useState<number | undefined>(existingAmmo?.powderWeight);
   const [lotNumber, setLotNumber] = useState(existingAmmo?.lotNumber || '');
   const [notes, setNotes] = useState(existingAmmo?.notes || '');
+
+  // The note the factory-load picker last wrote, so picking another load
+  // replaces that note but never one the shooter wrote or edited (#225).
+  const [factoryNote, setFactoryNote] = useState<string | undefined>(undefined);
+
+  // Copies a factory load's published figures into the fields, once (#225).
+  const applyFactoryLoad = (load: FactoryLoad) => {
+    setName(load.name);
+    setManufacturer(load.manufacturer);
+    setCaliber(load.caliber);
+    setBulletWeight(load.bulletWeight);
+    setBulletType(load.bulletType);
+    setBcG1(load.ballisticCoefficientG1);
+    setBcG7(load.ballisticCoefficientG7);
+    setMuzzleVelocity(load.muzzleVelocity);
+    const note = factoryLoadNote(load);
+    setNotes((current) => (!current || current === factoryNote ? note : current));
+    setFactoryNote(note);
+  };
 
   const [errors, setErrors] = useState<Partial<Record<keyof AmmoProfileData, string>>>({});
 
@@ -115,6 +137,8 @@ export const AmmoProfileForm: React.FC = () => {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
+        {!isEditing && <FactoryLoadPicker caliber={caliber} onSelect={applyFactoryLoad} />}
+
         <TextInput
           label="Ammo Name"
           accessibilityLabel="Ammunition name"
@@ -141,7 +165,7 @@ export const AmmoProfileForm: React.FC = () => {
           label="Caliber"
           value={caliber}
           onValueChange={setCaliber}
-          options={CALIBER_OPTIONS}
+          options={caliberOptions}
           placeholder="Select caliber"
           required
           error={errors.caliber}

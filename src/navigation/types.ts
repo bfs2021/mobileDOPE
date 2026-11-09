@@ -15,6 +15,8 @@ export type RootStackParamList = {
   MainTabs: undefined;
   Settings: undefined;
   PrivacyPolicy: undefined;
+  // Settings > Manage Calibers (#67).
+  Calibers: undefined;
 };
 
 /**
@@ -65,7 +67,10 @@ export type SessionStackParamList = {
   RangeSessionStart: undefined;
   RangeSessionActive: { sessionId: number };
   RangeSessionSummary: { sessionId: number };
-  EnvironmentInput: undefined;
+  /** With a `snapshotId`, edits that saved snapshot rather than capturing a new one (#62). */
+  EnvironmentInput: { snapshotId?: number } | undefined;
+  /** Saved conditions: edit one, or compare two (#62). */
+  EnvironmentHistory: undefined;
 };
 
 /**
@@ -76,6 +81,8 @@ export type HistoryStackParamList = {
   DOPELogDetail: { logId: number };
   DOPELogEdit: { logId?: number };
   DOPECurve: { rifleId: number; ammoId: number };
+  /** Marks points of impact on the target for a log (#63). */
+  TargetMarking: { logId: number };
 };
 
 /**
@@ -91,6 +98,20 @@ export type CalculatorStackParamList = {
     distance: number;
     distanceUnit: 'yards' | 'meters';
     angularUnit: 'MIL' | 'MOA';
+    /**
+     * The wind the solution was solved in, mph and degrees (#163). The
+     * calculator's wind is its own input, separate from the environment store,
+     * so the windage offset has to be scaled by this one. Optional: absent, the
+     * environment store's wind is used.
+     */
+    windSpeed?: number;
+    windDirection?: number;
+    /**
+     * An optional gust, mph, and the same shot solved in it (#220). With a
+     * gust, `windSpeed` is the lull and the screen shows the windage bracket.
+     */
+    gustSpeed?: number;
+    gustSolution?: BallisticSolution;
   };
   WindTable: { rifleId: number; ammoId: number; distance: number };
   MovingTargetCalculator: { rifleId?: number; ammoId?: number };
