@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-09
+
+A feature release built on your own logged DOPE: the solution can now be
+adjusted by the shots you have actually taken -- in elevation, in windage, by
+interpolation between logged distances and by barrel state -- with a confidence
+figure that stands aside when the logs disagree. Alongside it: marking and
+measuring groups on a target, factory loads, custom calibers, automatic
+backups, the device barometer, and a round of ballistics corrections, the
+largest of which makes every windage figure about six times smaller and right.
+
 ### Added
 
 - Factory loads. A new ammunition profile can start from one of 12 common
@@ -107,6 +117,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   either side of today's distance are solved, so a long history does not slow
   the screen.
 
+- Range sessions show the same adjusted figure the calculator does. The active
+  session screen now uses the calculator's own DOPE-adjustment hook, so the two
+  screens cannot disagree about one shot: the adjusted elevation in large type,
+  the caption saying where it came from, the confidence badge, the same "Adjust
+  by my DOPE" switch, and an expandable breakdown of the solver's figure, the
+  DOPE offset, each barrel-state correction and the shooter's manual trim, with
+  the contributing logs beneath it. It loads the logs itself, so a shooter who
+  went straight to a session is no longer told there is no historical data.
+- Barrel state reaches the shooter. A cold-bore bias and a heat shift are read
+  from your own logs -- each log's offset against the solver in that log's own
+  conditions, which is what makes shots at 300 and 900 yards comparable -- and
+  offered in a session. Both are off by default, each behind its own switch, so
+  a correction drawn from three cold-bore shots is never dialled unasked.
+- Windage is adjusted by your own logs too. Raw windage offsets cannot be
+  averaged across different winds, so each offset is divided by the crosswind it
+  was measured in before anything is averaged, and the weighted mean is
+  multiplied by today's crosswind. The crosswind's sign carries through, so a
+  log shot in a left-to-right wind corrects a right-to-left shot the way the
+  bullet does. It uses the same evidence curve as the elevation offset.
+- Saved Conditions, on the Session stack from the Environmental Data screen:
+  every saved reading with its time, conditions and density altitude (derived
+  where the stored field predates the column). Tapping one selects it, a second
+  produces the comparison the app could already compute but never offered, and a
+  third drops the oldest so readings can be walked against one you hold on to. A
+  saved reading can also be edited.
+- Settings -> DOPE-Assisted Aiming holds the three figures the adjustment uses:
+  whether to adjust by your DOPE at all (on), the matching window a log must
+  have been fired within to count (50 yd), and the confidence the app must have
+  in itself before using its own correction (40%). Each default is taken from
+  the module that consumes it rather than restated, and the user guide has a
+  page on the feature.
+- The target zooms, to 8x, and pans, with pinch or with buttons, and shots can
+  be marked through the zoom. At full view a half-inch group on an 8.5-inch
+  target is about twenty points across, so several marks landed inside one
+  marker dot while the statistics reported the spread to two decimal places.
+- Settings -> Automatic Backup -> Delete Automatic Backups removes the automatic
+  backups, after confirmation, and clears the last-run time. Switching to Manual
+  used to leave every one of them in place with uninstalling the only way out.
+  With a schedule still on, a new backup is due at once, and the confirmation
+  says so and suggests choosing Manual first.
+- The opt-in app lock is accepted (ADR-015) and its setting is stored, off by
+  default. **The lock itself is not shipped**: nothing reads the setting yet and
+  Settings does not show a switch, so the app never offers a lock that locks
+  nothing. When it lands it will use the device's own authentication and will
+  gate the UI only -- it is not encryption, and the database and exports stay
+  unencrypted. `expo-local-authentication` and its Face ID and biometric
+  permissions are declared ahead of the gate, and `PRIVACY.md` says so. (#67)
+
 ### Fixed
 
 - The Wind Table opened slowly with no sign it was working: the button stayed
@@ -169,6 +227,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The DOPE log CSV has a `Distance Unit` column. Each log keeps its own
   distance unit, so a distance of 500 could have been yards or meters.
 
+- Starting a range session no longer re-stamps the conditions it copies. The
+  copy carried `new Date().toISOString()`, so air measured weeks ago came back
+  dated minutes ago -- and since the DOPE ranking began trusting the latest
+  snapshot only while it is under 24 hours old, every session start defeated
+  that limit and stale air was ranked as similar conditions. The copy now
+  carries the source reading's own timestamp, and a session started on
+  conditions over a day old says how old they are and offers Environment input
+  first. (#192)
+- The DOPE ranking uses the most recent snapshot when the shooter has not set
+  current conditions, which on a cold launch is almost always -- without it a
+  quarter of the ranking weight stopped discriminating while the card still
+  said "from similar conditions". The fallback is used only while that snapshot
+  can be shown to be under a day old, and the caption now claims only what was
+  actually compared.
+- With the adjustment on, the headline reads ELEVATION (ADJUSTED) while the log
+  records the solver's own figure -- which is right, since every offset is
+  logged minus predicted -- but nothing said so. A line under the save button
+  now names both figures.
+- An interpolated adjustment says what it drew on instead of leaving the
+  relevant-DOPE list saying no log was close enough, is no longer built and
+  solved while the Adjust by my DOPE switch is off, and predicts each log at its
+  own distance rather than at the rounded yard it was grouped by (which gave a
+  metric log two different offsets depending on the path that read it).
+- The DOPE adjustment switch is drawn in the app's theme rather than the iOS
+  system green, like the app's other switches.
+- Clearing the barometer calibration offset now means no offset; the previously
+  saved figure stayed applied to every reading while the field showed blank. A
+  successful barometer read is also announced to screen readers, and the button
+  keeps its accessible name while the spinner replaces its title.
+- Shots can be placed by measurement. The marking surface could only be tapped,
+  and a screen reader activates it at its centre, so VoiceOver and TalkBack
+  users could only mark dead centre -- a group then reported as 0.00 in -- and a
+  keyboard or switch user could not place a shot at all (WCAG 2.1.1). Add Shot
+  by Measurement takes inches right of and above the centre and places the shot
+  where a tap would, and the surface's hint points to it. A retried save also
+  updates the log's row rather than leaving the old figures on screen.
+- A target photo's metadata is stripped past the primary image. The stripper
+  treated the first scan as running to the end of the file, so an MPF file's
+  secondary images -- an iPhone HDR gain map or depth map, each a complete JPEG
+  with EXIF of its own -- kept their metadata, GPS included. The saved stream
+  now ends at the primary image's EOI.
+- Automatic backups survive a clock set back: a file stamped with a set-back
+  clock sorted oldest, so pruning deleted it as soon as it was written and Share
+  Latest Backup sent an older file. An unrecognised stored schedule is treated
+  as Manual, and a failure to record the backup time is logged rather than left
+  as an unhandled rejection.
+- Renaming a custom caliber validates the new name before asking for
+  confirmation, instead of confirming an empty, duplicate or built-in name and
+  then refusing it; a refused or failed delete now reports itself; and a rename
+  whose commit fails restores the stored caliber list as well as the in-memory
+  one, so storage no longer names a caliber no profile uses.
+
 ### Security
 
 - Dependency advisories cleared: `undici` GHSA-2m5v-pch6-74hx,
@@ -176,6 +286,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#200). It is install-time only, through node-gyp. The first two were new
   and failed the audit gate; the third had been waived `fixable-now`, and its
   waiver is removed.
+
+- Further advisories cleared across the release: 28 by a lockfile-only
+  `npm audit fix`, four transitive dependencies bumped to patched releases, and
+  the two unwaived `markdown-it` advisories. The waiver register is down from
+  eleven entries to three -- `tar`, `nanoid`, `shell-quote`, `ws`, `form-data`
+  and `ip-address` are all patched, `braces`'s advisory was withdrawn and
+  `node-forge` is fixed, so each of those waivers is gone. What remains waived
+  is `image-size` (two advisories, build-time only) and `zod`
+  GHSA-mrhx-c7xc-m3w5, which Expo's own nested copy keeps reported; nothing
+  under `src/` imports zod.
+- The security register's waiver expiry dates are now checked, not just the
+  waiver count, so a waiver cannot quietly outlive its justification.
 
 ## [1.1.0] - 2026-09-30
 
@@ -348,7 +470,8 @@ First tagged release. Ships the entire application (113 commits, 23 features, 3 
 - `npm run security:audit` reports high-severity advisories in Expo transitive
   dependencies with no upstream fix available; re-check on the next Expo bump.
 
-[Unreleased]: https://github.com/karlgroves/mobileDOPE/compare/v1.1.0...develop
+[Unreleased]: https://github.com/karlgroves/mobileDOPE/compare/v1.2.0...develop
+[1.2.0]: https://github.com/karlgroves/mobileDOPE/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/karlgroves/mobileDOPE/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/karlgroves/mobileDOPE/releases/tag/v1.0.0
 [#17]: https://github.com/karlgroves/mobileDOPE/issues/17
