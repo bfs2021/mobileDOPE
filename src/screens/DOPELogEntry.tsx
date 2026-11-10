@@ -40,7 +40,7 @@ type Props = LogsStackScreenProps<'DOPELogEdit'>;
  * after the log arrived (#141).
  */
 export function DOPELogEntry(props: Props) {
-  const { logId } = props.route.params || {};
+  const { logId, prefill } = props.route.params || {};
   const { colors } = useTheme().theme;
   const { log, status } = useDopeLog(logId);
 
@@ -65,11 +65,25 @@ export function DOPELogEntry(props: Props) {
     );
   }
 
-  return <DOPELogForm {...props} existingLog={log} />;
+  // A quick entry's prefill only seeds the form's initial state. When Confirm
+  // Shot lands on this screen while it is already the History stack's focused
+  // route, React Navigation updates the params on the same route key instead
+  // of pushing a new screen, so a new prefill starts the form over (#245).
+  // Without the key the form kept the first shot's numbers while its derived
+  // rifle and correction unit followed the second shot.
+  return (
+    <DOPELogForm key={prefill ? JSON.stringify(prefill) : 'form'} {...props} existingLog={log} />
+  );
 }
 
 function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?: DOPELog }) {
-  const { logId } = route.params || {};
+  // `prefill` is the shot the Dashboard's Confirm Shot just solved (#245). It
+  // used to be handed over and dropped: nothing on this screen read it, so a
+  // quick entry opened the same empty form as New DOPE Log and the shooter
+  // retyped the rifle, load, distance and both corrections they had just
+  // dialled in. It seeds the fields below -- above the Settings defaults, and
+  // below both the shooter's own choice and an edited log's recorded values.
+  const { logId, prefill } = route.params || {};
   const { theme } = useTheme();
   const { colors } = theme;
 
@@ -98,27 +112,32 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
   // first render is still the default -- a one-time initial state missed it
   // and showed "Select Rifle".
   const [chosenRifleId, setSelectedRifleId] = useState<number | undefined>();
-  const selectedRifleId = chosenRifleId ?? existingLog?.rifleId ?? rifles[0]?.id;
-  const [selectedAmmoId, setSelectedAmmoId] = useState<number | undefined>(existingLog?.ammoId);
+  const selectedRifleId =
+    chosenRifleId ?? existingLog?.rifleId ?? prefill?.rifleId ?? rifles[0]?.id;
+  const [selectedAmmoId, setSelectedAmmoId] = useState<number | undefined>(
+    existingLog?.ammoId ?? prefill?.ammoId ?? undefined
+  );
 
   // Target parameters
-  const [distance, setDistance] = useState<number | undefined>(existingLog?.distance || 100);
-  // The shooter's choice, if they made one; otherwise the log's own unit, or
-  // the Settings default. There is no per-rifle distance unit, so Settings
-  // decides for a new log. A fixed 'yards' start ignored Settings -> Default
-  // Units -> Distance Unit, the same class of defect #230 fixed for the dial
-  // correction unit (#242).
+  const [distance, setDistance] = useState<number | undefined>(
+    existingLog?.distance ?? prefill?.distance ?? 100
+  );
+  // The shooter's choice, if they made one; otherwise the log's own unit, then
+  // a quick-entry prefill's unit, then the Settings default. There is no
+  // per-rifle distance unit, so Settings decides for a new log. A fixed 'yards'
+  // start ignored Settings -> Default Units -> Distance Unit, the same class of
+  // defect #230 fixed for the dial correction unit (#242).
   const defaultDistanceUnit = useAppStore((state) => state.settings.defaultDistanceUnit);
   const [chosenDistanceUnit, setDistanceUnit] = useState<'yards' | 'meters' | undefined>();
   const distanceUnit: 'yards' | 'meters' =
-    chosenDistanceUnit ?? existingLog?.distanceUnit ?? defaultDistanceUnit;
+    chosenDistanceUnit ?? existingLog?.distanceUnit ?? prefill?.distanceUnit ?? defaultDistanceUnit;
 
   // Corrections
   const [elevationCorrection, setElevationCorrection] = useState<number | undefined>(
-    existingLog?.elevationCorrection || 0
+    existingLog?.elevationCorrection ?? prefill?.elevationCorrection ?? 0
   );
   const [windageCorrection, setWindageCorrection] = useState<number | undefined>(
-    existingLog?.windageCorrection || 0
+    existingLog?.windageCorrection ?? prefill?.windageCorrection ?? 0
   );
   // The shooter's choice, if they made one; otherwise the log's own unit, the
   // selected rifle's turret unit, or the Settings default. Derived like the
@@ -127,9 +146,14 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
   // dialled on a MOA turret labelled MIL (#230).
   const defaultCorrectionUnit = useAppStore((state) => state.settings.defaultCorrectionUnit);
   const [chosenCorrectionUnit, setCorrectionUnit] = useState<'MIL' | 'MOA' | undefined>();
+  // A quick entry's unit sits ABOVE the rifle's turret here, unlike every other
+  // field's prefill, because it is not a preference: it is the unit the
+  // Dashboard solved the prefilled elevation and windage in. Letting a MOA
+  // turret relabel prefilled MIL numbers is exactly the defect #230 fixed.
   const correctionUnit: 'MIL' | 'MOA' =
     chosenCorrectionUnit ??
     existingLog?.correctionUnit ??
+    prefill?.correctionUnit ??
     rifles.find((r) => r.id === selectedRifleId)?.clickValueType ??
     defaultCorrectionUnit;
 
