@@ -18,10 +18,12 @@ import { useTheme } from '../contexts/ThemeContext';
 import { useDopeLog } from '../hooks/useDopeLog';
 import { dopeLogRepository } from '../services/database';
 import { useAmmoStore } from '../store/useAmmoStore';
+import { useAppStore } from '../store/useAppStore';
 import { useDOPEStore } from '../store/useDOPEStore';
 import { useEnvironmentStore } from '../store/useEnvironmentStore';
 import { useRifleStore } from '../store/useRifleStore';
 import { describeColdBoreSuggestion, suggestColdBore } from '../utils/coldBore';
+import { conditionsToMatch, describeSnapshotAge } from '../utils/matchConditions';
 
 import type { DOPELogData, DOPELog } from '../models/DOPELog';
 import type { LogsStackScreenProps } from '../navigation/types';
@@ -38,7 +40,7 @@ type Props = LogsStackScreenProps<'DOPELogEdit'>;
  * after the log arrived (#141).
  */
 export function DOPELogEntry(props: Props) {
-  const { logId } = props.route.params || {};
+  const { logId, prefill } = props.route.params || {};
   const { colors } = useTheme().theme;
   const { log, status } = useDopeLog(logId);
 
@@ -63,17 +65,31 @@ export function DOPELogEntry(props: Props) {
     );
   }
 
-  return <DOPELogForm {...props} existingLog={log} />;
+  // A quick entry's prefill only seeds the form's initial state. When Confirm
+  // Shot lands on this screen while it is already the History stack's focused
+  // route, React Navigation updates the params on the same route key instead
+  // of pushing a new screen, so a new prefill starts the form over (#245).
+  // Without the key the form kept the first shot's numbers while its derived
+  // rifle and correction unit followed the second shot.
+  return (
+    <DOPELogForm key={prefill ? JSON.stringify(prefill) : 'form'} {...props} existingLog={log} />
+  );
 }
 
 function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?: DOPELog }) {
-  const { logId } = route.params || {};
+  // `prefill` is the shot the Dashboard's Confirm Shot just solved (#245). It
+  // used to be handed over and dropped: nothing on this screen read it, so a
+  // quick entry opened the same empty form as New DOPE Log and the shooter
+  // retyped the rifle, load, distance and both corrections they had just
+  // dialled in. It seeds the fields below -- above the Settings defaults, and
+  // below both the shooter's own choice and an edited log's recorded values.
+  const { logId, prefill } = route.params || {};
   const { theme } = useTheme();
   const { colors } = theme;
 
   const { rifles, loadRifles } = useRifleStore();
   const { ammoProfiles, loadAmmoProfiles } = useAmmoStore();
-  const { current: currentEnv, saveCurrent } = useEnvironmentStore();
+  const { current: currentEnv, saveCurrent, snapshots, loadSnapshots } = useEnvironmentStore();
   const { createDopeLog, updateDopeLog, loading } = useDOPEStore();
 
   // Load the profiles this screen needs rather than rely on another screen
@@ -96,25 +112,50 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
   // first render is still the default -- a one-time initial state missed it
   // and showed "Select Rifle".
   const [chosenRifleId, setSelectedRifleId] = useState<number | undefined>();
-  const selectedRifleId = chosenRifleId ?? existingLog?.rifleId ?? rifles[0]?.id;
-  const [selectedAmmoId, setSelectedAmmoId] = useState<number | undefined>(existingLog?.ammoId);
+  const selectedRifleId =
+    chosenRifleId ?? existingLog?.rifleId ?? prefill?.rifleId ?? rifles[0]?.id;
+  const [selectedAmmoId, setSelectedAmmoId] = useState<number | undefined>(
+    existingLog?.ammoId ?? prefill?.ammoId ?? undefined
+  );
 
   // Target parameters
-  const [distance, setDistance] = useState<number | undefined>(existingLog?.distance || 100);
-  const [distanceUnit, setDistanceUnit] = useState<'yards' | 'meters'>(
-    existingLog?.distanceUnit || 'yards'
+  const [distance, setDistance] = useState<number | undefined>(
+    existingLog?.distance ?? prefill?.distance ?? 100
   );
+  // The shooter's choice, if they made one; otherwise the log's own unit, then
+  // a quick-entry prefill's unit, then the Settings default. There is no
+  // per-rifle distance unit, so Settings decides for a new log. A fixed 'yards'
+  // start ignored Settings -> Default Units -> Distance Unit, the same class of
+  // defect #230 fixed for the dial correction unit (#242).
+  const defaultDistanceUnit = useAppStore((state) => state.settings.defaultDistanceUnit);
+  const [chosenDistanceUnit, setDistanceUnit] = useState<'yards' | 'meters' | undefined>();
+  const distanceUnit: 'yards' | 'meters' =
+    chosenDistanceUnit ?? existingLog?.distanceUnit ?? prefill?.distanceUnit ?? defaultDistanceUnit;
 
   // Corrections
   const [elevationCorrection, setElevationCorrection] = useState<number | undefined>(
-    existingLog?.elevationCorrection || 0
+    existingLog?.elevationCorrection ?? prefill?.elevationCorrection ?? 0
   );
   const [windageCorrection, setWindageCorrection] = useState<number | undefined>(
-    existingLog?.windageCorrection || 0
+    existingLog?.windageCorrection ?? prefill?.windageCorrection ?? 0
   );
-  const [correctionUnit, setCorrectionUnit] = useState<'MIL' | 'MOA'>(
-    existingLog?.correctionUnit || 'MIL'
-  );
+  // The shooter's choice, if they made one; otherwise the log's own unit, the
+  // selected rifle's turret unit, or the Settings default. Derived like the
+  // rifle above, so a rifle that loads after the first render -- or a change
+  // of rifle -- still sets it. A fixed 'MIL' start let a shooter save numbers
+  // dialled on a MOA turret labelled MIL (#230).
+  const defaultCorrectionUnit = useAppStore((state) => state.settings.defaultCorrectionUnit);
+  const [chosenCorrectionUnit, setCorrectionUnit] = useState<'MIL' | 'MOA' | undefined>();
+  // A quick entry's unit sits ABOVE the rifle's turret here, unlike every other
+  // field's prefill, because it is not a preference: it is the unit the
+  // Dashboard solved the prefilled elevation and windage in. Letting a MOA
+  // turret relabel prefilled MIL numbers is exactly the defect #230 fixed.
+  const correctionUnit: 'MIL' | 'MOA' =
+    chosenCorrectionUnit ??
+    existingLog?.correctionUnit ??
+    prefill?.correctionUnit ??
+    rifles.find((r) => r.id === selectedRifleId)?.clickValueType ??
+    defaultCorrectionUnit;
 
   // Target info
   const [targetType, setTargetType] = useState<'steel' | 'paper' | 'vital_zone' | 'other'>(
@@ -149,6 +190,25 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
   const [environmentId, setEnvironmentId] = useState<number | undefined>(
     existingLog?.environmentId
   );
+
+  // The conditions a new log is recorded against (#231). `current` is null on
+  // a cold launch until the Environmental Data screen is opened, so the latest
+  // snapshot stands in for it -- by the same under-a-day rule the DOPE ranking
+  // and Start Session apply (#190, #192), so the three cannot disagree about
+  // whether today's air is known. The snapshot is linked as it is, not copied
+  // under a fresh timestamp, which would make old air look newly measured.
+  useEffect(() => {
+    loadSnapshots(1).catch(() => {
+      // Without snapshots the form asks for conditions, as it did before.
+    });
+  }, [loadSnapshots]);
+  const conditions = conditionsToMatch(currentEnv, snapshots);
+  const latestSnapshot = snapshots[0];
+  // An edited log keeps the conditions it was shot in, so another snapshot is
+  // not offered as its air.
+  const recentSnapshot =
+    !existingLog && conditions.source === 'latest-snapshot' ? latestSnapshot : undefined;
+  const logEnv = conditions.source === 'current' ? currentEnv : recentSnapshot;
 
   // Auto-select compatible ammo when rifle changes
   const handleRifleChange = (newRifleId: number | undefined) => {
@@ -238,7 +298,7 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
 
     try {
       // Save or update current environment if exists
-      let envId = environmentId;
+      let envId = environmentId ?? recentSnapshot?.id;
       if (currentEnv && !environmentId) {
         const savedEnv = await saveCurrent();
         envId = savedEnv.id;
@@ -498,25 +558,30 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
         </Card>
 
         {/* Environmental Snapshot */}
-        {currentEnv && (
+        {logEnv && (
           <Card style={[styles.card, { backgroundColor: colors.surface }]}>
             <Text style={[styles.envTitle, { color: colors.text.secondary }]}>
-              Current Environment
+              {recentSnapshot
+                ? `Latest Conditions (${describeSnapshotAge(recentSnapshot.timestamp)})`
+                : 'Current Environment'}
             </Text>
             <Text style={[styles.envText, { color: colors.text.primary }]}>
-              {`${currentEnv.temperature}°F • ${currentEnv.pressure}" Hg • ${currentEnv.altitude}' MSL`}
+              {`${logEnv.temperature}°F • ${logEnv.pressure}" Hg • ${logEnv.altitude}' MSL`}
             </Text>
             <Text style={[styles.envText, { color: colors.text.primary }]}>
-              Wind: {currentEnv.windSpeed} mph @ {currentEnv.windDirection}°
+              Wind: {logEnv.windSpeed} mph @ {logEnv.windDirection}°
             </Text>
           </Card>
         )}
 
-        {!currentEnv && (
+        {!logEnv && !environmentId && (
           <Card style={[styles.card, { backgroundColor: colors.error + '20' }]}>
             <Text style={[styles.warningText, { color: colors.errorText }]}>
-              ⚠️ No environmental data captured. Go to Range → Environmental Conditions to record
-              conditions.
+              {latestSnapshot
+                ? `⚠️ The latest conditions are ${describeSnapshotAge(latestSnapshot.timestamp)}. ` +
+                  'Record current conditions on the Session tab: Current Conditions → Update.'
+                : '⚠️ No environmental data captured. Record conditions on the Session tab: ' +
+                  'Current Conditions → Add.'}
             </Text>
           </Card>
         )}
@@ -529,7 +594,7 @@ function DOPELogForm({ route, navigation, existingLog }: Props & { existingLog?:
             variant="primary"
             size="large"
             loading={loading}
-            disabled={!selectedRifleId || !selectedAmmoId || !currentEnv}
+            disabled={!selectedRifleId || !selectedAmmoId || (!logEnv && !environmentId)}
           />
         </View>
       </ScrollView>

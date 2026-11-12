@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 
 import { Card, Button, SegmentedControl } from '../components';
+import { ExportFolderSetting } from '../components/ExportFolderSetting';
 import { NumberInput } from '../components/NumberInput';
 import { NumberPicker } from '../components/NumberPicker';
 import { useTheme } from '../contexts/ThemeContext';
@@ -161,7 +162,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
   const handleResetPresets = () => {
     Alert.alert(
       'Reset Distance Presets',
-      'Reset to default presets (100-1000 in 100-yard increments)?',
+      'Reset to default presets (100-1000 in 25-yard increments)?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -980,6 +981,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
         {/* Data Management */}
         <Card style={styles.card}>
           <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>Data Management</Text>
+          <ExportFolderSetting />
           <Button
             title="Export All Data"
             onPress={handleExportData}

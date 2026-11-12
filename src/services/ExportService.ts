@@ -14,6 +14,8 @@ import {
 } from '../utils/backupSchedule';
 import { parseDbTimestamp } from '../utils/dbTimestamp';
 
+import { deliverExport } from './exportFolder';
+
 import type { AmmoProfile } from '../models/AmmoProfile';
 import type { DOPELog } from '../models/DOPELog';
 import type { EnvironmentSnapshot } from '../models/EnvironmentSnapshot';
@@ -72,14 +74,11 @@ export async function exportRifleProfileJSON(rifle: RifleProfile): Promise<Expor
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export Rifle Profile',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export Rifle Profile',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -108,14 +107,11 @@ export async function exportAmmoProfileJSON(ammo: AmmoProfile): Promise<ExportRe
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export Ammo Profile',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export Ammo Profile',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -145,14 +141,11 @@ export async function exportAllRifleProfilesJSON(rifles: RifleProfile[]): Promis
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export All Rifle Profiles',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export All Rifle Profiles',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -267,14 +260,11 @@ export async function exportDOPELogsCSV(
     const csvContent = dopeLogsToCSV(logs, rifles, ammos, environments);
     await file.write(csvContent);
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'text/csv',
-        dialogTitle: 'Export DOPE Logs',
-        UTI: 'public.comma-separated-values-text',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'text/csv',
+      dialogTitle: 'Export DOPE Logs',
+      UTI: 'public.comma-separated-values-text',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -304,14 +294,11 @@ export async function exportDOPELogsJSON(logs: DOPELog[]): Promise<ExportResult>
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export DOPE Logs',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export DOPE Logs',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -552,14 +539,15 @@ export async function exportDOPELogsPDF(
       base64: false,
     });
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(uri, {
+    await deliverExport(
+      uri,
+      {
         mimeType: 'application/pdf',
         dialogTitle: 'Export DOPE Logs PDF',
         UTI: 'com.adobe.pdf',
-      });
-    }
+      },
+      `dope_logs_${Date.now()}.pdf`
+    );
 
     return { success: true, uri };
   } catch (error) {
@@ -628,15 +616,22 @@ function serialiseFullBackup(
   return JSON.stringify(data, null, 2);
 }
 
-/** Hand a full backup file to the system share sheet, where one is available. */
+/** Share-sheet details for a full backup file. */
+const FULL_BACKUP_SHARE = {
+  mimeType: 'application/json',
+  dialogTitle: 'Export Full Backup',
+  UTI: 'public.json',
+};
+
+/**
+ * Hand a full backup file to the system share sheet, where one is available.
+ * Used for Share Latest Backup, which never copies to the export folder: an
+ * automatic backup stays in private storage unless shared (#215).
+ */
 async function shareBackupFile(uri: string): Promise<void> {
   const canShare = await Sharing.isAvailableAsync();
   if (canShare) {
-    await Sharing.shareAsync(uri, {
-      mimeType: 'application/json',
-      dialogTitle: 'Export Full Backup',
-      UTI: 'public.json',
-    });
+    await Sharing.shareAsync(uri, FULL_BACKUP_SHARE);
   }
 }
 
@@ -665,7 +660,7 @@ export async function exportFullBackup(
     const file = new File(Paths.document, filename);
 
     await file.write(serialiseFullBackup(rifles, ammos, logs, environments, includeCoordinates));
-    await shareBackupFile(file.uri);
+    await deliverExport(file.uri, FULL_BACKUP_SHARE);
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -929,14 +924,11 @@ export async function exportSessionReportMarkdown(
     const markdownContent = generateSessionReportMarkdown(session, rifle, ammo, environment);
     await file.write(markdownContent);
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'text/markdown',
-        dialogTitle: 'Export Session Report',
-        UTI: 'net.daringfireball.markdown',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'text/markdown',
+      dialogTitle: 'Export Session Report',
+      UTI: 'net.daringfireball.markdown',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -974,14 +966,11 @@ export async function exportSessionReportJSON(
 
     await file.write(JSON.stringify(data, null, 2));
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(file.uri, {
-        mimeType: 'application/json',
-        dialogTitle: 'Export Session Report',
-        UTI: 'public.json',
-      });
-    }
+    await deliverExport(file.uri, {
+      mimeType: 'application/json',
+      dialogTitle: 'Export Session Report',
+      UTI: 'public.json',
+    });
 
     return { success: true, uri: file.uri };
   } catch (error) {
@@ -1383,14 +1372,15 @@ export async function exportSessionReportPDF(
       base64: false,
     });
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(uri, {
+    await deliverExport(
+      uri,
+      {
         mimeType: 'application/pdf',
         dialogTitle: 'Export Session Report PDF',
         UTI: 'com.adobe.pdf',
-      });
-    }
+      },
+      `session_report_${Date.now()}.pdf`
+    );
 
     return { success: true, uri };
   } catch (error) {
@@ -1620,14 +1610,15 @@ export async function exportBallisticSolutionPDF(
       base64: false,
     });
 
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(uri, {
+    await deliverExport(
+      uri,
+      {
         mimeType: 'application/pdf',
         dialogTitle: 'Export Ballistic Solution',
         UTI: 'com.adobe.pdf',
-      });
-    }
+      },
+      `ballistic_solution_${Date.now()}.pdf`
+    );
 
     return { success: true, uri };
   } catch (error) {
